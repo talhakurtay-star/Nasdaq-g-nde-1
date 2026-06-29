@@ -94,6 +94,44 @@ def format_metrics(metrics: dict) -> str:
     return "\n".join(lines)
 
 
+def monthly_breakdown(equity: pd.Series, monthly_dd_limit_pct: float = 10.0) -> pd.DataFrame:
+    """Aya göre getiri ve ay-içi max düşüş (prop firma aylık %10 DD kontrolü)."""
+    if equity.empty:
+        return pd.DataFrame()
+    df = pd.DataFrame({"equity": equity})
+    df["ym"] = equity.index.to_period("M")
+    rows = []
+    for ym, g in df.groupby("ym"):
+        eq = g["equity"]
+        ret = eq.iloc[-1] / eq.iloc[0] - 1
+        intramonth_dd = (eq / eq.cummax() - 1).min()
+        rows.append({
+            "ay": str(ym),
+            "getiri%": round(ret * 100, 2),
+            "ay_içi_DD%": round(intramonth_dd * 100, 2),
+            "DD_ihlal": "EVET" if intramonth_dd * 100 < -monthly_dd_limit_pct else "-",
+        })
+    return pd.DataFrame(rows)
+
+
+def format_monthly(equity: pd.Series, monthly_dd_limit_pct: float = 10.0) -> str:
+    mb = monthly_breakdown(equity, monthly_dd_limit_pct)
+    if mb.empty:
+        return ""
+    pos = (mb["getiri%"] > 0).sum()
+    breaches = (mb["DD_ihlal"] == "EVET").sum()
+    lines = [
+        "  AYLIK DÖKÜM (prop-firma kontrolü)",
+        "─" * 40,
+        mb.to_string(index=False),
+        "─" * 40,
+        f"  Pozitif ay: {pos}/{len(mb)}  |  ort. aylık: {mb['getiri%'].mean():+.2f}%",
+        f"  Aylık DD ihlali olan ay: {breaches}  "
+        f"({'✓ temiz' if breaches == 0 else '⚠️ İHLAL VAR'})",
+    ]
+    return "\n".join(lines)
+
+
 def format_session_summary(days, metrics: dict) -> str:
     """Prop-firm seans metriklerini okunabilir tabloya çevir."""
     if "total_days" not in metrics:

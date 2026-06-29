@@ -71,6 +71,9 @@ def parse_args():
     p.add_argument("--plot", default=None)
     p.add_argument("--today", action="store_true",
                    help="Backtest yerine: en güncel günün sinyalini/kararını göster")
+    p.add_argument("--monthly", action="store_true", help="Aylık P&L dökümünü göster")
+    p.add_argument("--export", default=None,
+                   help="trade ve equity'yi <ÖNEK>_trades.csv / _equity.csv olarak kaydet")
     return p.parse_args()
 
 
@@ -141,6 +144,17 @@ def main():
         print(f"  Ortalama günlük  : {m['avg_daily_return_pct']:+.4f} %  "
               f"(hedef: +{args.target} %)")
         print(f"  {args.cash:.0f}$ → {args.cash * (1 + m['total_return']):.0f}$")
+
+    if args.monthly:
+        from src.metrics import format_monthly
+        print("\n" + format_monthly(result.equity, 10.0))
+
+    if args.export:
+        result.trades.to_csv(f"{args.export}_trades.csv", index=False)
+        result.equity.to_csv(f"{args.export}_equity.csv")
+        result.days.to_csv(f"{args.export}_days.csv")
+        print(f"\n  Dışa aktarıldı: {args.export}_trades.csv / _equity.csv / _days.csv "
+              f"({len(result.trades)} işlem)")
 
     if args.plot:
         _plot(result, data, Path(args.plot))

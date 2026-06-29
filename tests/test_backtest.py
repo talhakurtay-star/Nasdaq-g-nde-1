@@ -191,6 +191,16 @@ def test_session_hour_filter():
         assert (entry_hours == 10).all()
 
 
+def test_monthly_breakdown():
+    from src.metrics import monthly_breakdown
+    idx = pd.date_range("2024-01-01", periods=90, freq="D")
+    eq = pd.Series(np.linspace(10000, 10300, 90), index=idx)  # yavaş artan
+    mb = monthly_breakdown(eq, monthly_dd_limit_pct=10.0)
+    assert len(mb) == 3  # Oca/Şub/Mar
+    assert {"ay", "getiri%", "ay_içi_DD%", "DD_ihlal"}.issubset(mb.columns)
+    assert (mb["DD_ihlal"] == "-").all()  # düzgün artan → ihlal yok
+
+
 def test_optimizer_grid_search_meanrev():
     from src.optimizer import grid_search, OptConfig
     data = _make_intraday(days=20)
