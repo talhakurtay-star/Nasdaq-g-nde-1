@@ -139,6 +139,10 @@ class OpeningRangeBreakout:
     # bu aralıkta değilse o gün işlem yapma. (Yalnız güçlü-momentum günleri.)
     min_or_range_pct: float = 0.0
     max_or_range_pct: float = 100.0
+    # Kırılım gücü: bar sadece dokunmasın, KAPANIŞTA seviyeyi geçsin (sahte fitil eler).
+    require_close_break: bool = False
+    # Trend teyidi: EMA(periyot) yukarıdaysa sadece long, aşağıdaysa sadece short (0 = kapalı).
+    trend_ema_period: int = 0
 
     def generate_signals(self, data: pd.DataFrame) -> pd.Series:
         idx = data.index
@@ -147,6 +151,10 @@ class OpeningRangeBreakout:
         high = data["high"].to_numpy()
         low = data["low"].to_numpy()
         close = data["close"].to_numpy()
+        if self.trend_ema_period > 0:
+            ema_arr = ema(data["close"], self.trend_ema_period).to_numpy()
+        else:
+            ema_arr = None
         n = len(idx)
         out = np.zeros(n, dtype=np.int8)
         open_min = self.open_hour * 60
@@ -156,13 +164,13 @@ class OpeningRangeBreakout:
         start = 0
         for k in range(n + 1):
             if k == n or day[k] != day[start]:
-                self._fill_day(out, minute, high, low, close, start, k, open_min, or_end, buf)
+                self._fill_day(out, minute, high, low, close, ema_arr, start, k, open_min, or_end, buf)
                 start = k
                 if k == n:
                     break
         return pd.Series(out, index=idx, dtype=int)
 
-    def _fill_day(self, out, minute, high, low, close, s, e, open_min, or_end, buf):
+    def _fill_day(self, out, minute, high, low, close, ema_arr, s, e, open_min, or_end, buf):
         # 1) Açılış aralığını (OR) belirle
         or_high, or_low = -np.inf, np.inf
         has_or = False
@@ -189,11 +197,19 @@ class OpeningRangeBreakout:
             if minute[j] < or_end:
                 continue
             if day_dir == 0:
-                if self.allow_long and high[j] >= up_level:
+                # Kırılım: kapanış teyidi isteniyorsa close, yoksa high/low
+                broke_up = (close[j] >= up_level) if self.require_close_break else (high[j] >= up_level)
+                broke_dn = (close[j] <= dn_level) if self.require_close_break else (low[j] <= dn_level)
+                # Trend teyidi
+                if ema_arr is not None:
+                    up_ok = close[j] > ema_arr[j]
+                    dn_ok = close[j] < ema_arr[j]
+                else:
+                    up_ok = dn_ok = True
+                if self.allow_long and broke_up and up_ok:
                     day_dir = 1
-                elif self.allow_short and low[j] <= dn_level:
+                elif self.allow_short and broke_dn and dn_ok:
                     day_dir = -1
-                # kırılım barından İTİBAREN sinyal ver (motor sonraki bar açılışında girer)
             if day_dir != 0:
                 out[j] = day_dir
 

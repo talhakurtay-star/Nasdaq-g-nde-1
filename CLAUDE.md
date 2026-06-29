@@ -54,6 +54,19 @@ python tools/overfit_test.py --data data/NAS100_M15.csv   # ZORUNLU overfit test
 python tools/batch_backtest.py                      # çoklu sembol
 ```
 
+## Hedef Gerçekliği — KANITLANMIŞ (tekrar deneme)
+- **NAS100 ORB edge'i GERÇEK ama küçük: ~+0.005%/gün (~%1.5-3/yıl), OOS +3.4% doğrulandı.**
+- **Günlük %0.44 hedefi ile edge arasında ~88 KAT fark var.** Kaldıraçla kapatılamaz
+  (88x kaldıraç %5 günlük firma DD'sini patlatır).
+- **Hit-rate duvarı: simetrik ±0.44 bracket'ta hit-rate ~%49'da sabit.** Denenen TÜM
+  filtreler (close-break, trend EMA, OR-range konviksiyon, kombinasyonlar) bunu %50
+  üstüne çıkaramadı → piyasa bu ölçekte verimli, kısa-vade yön ~yazı-tura.
+- **Edge KUYRUKTA, hit-rate'te değil:** bazı günler sert trend (büyük kazanç). Simetrik
+  0.44 KAPAĞI kazananı keser → edge'i yok eder. Edge ancak "kazananı koştur" (asimetrik
+  R:R, geniş per-trade SL, gün-sonu/trailing çıkış) ile yakalanır.
+- **Sonuç:** "Her gün %0.44" (≈%200/yıl) tek-enstrümanlı basit botla ULAŞILAMAZ.
+  Gerçekçi tavan ~%1.5-3/yıl tek edge'le; çoklu doğrulanmış edge ile belki birkaç kat.
+
 ## Doğrulanmış Gerçekler (tekrar keşfetme)
 - Motor doğru: geleceği bilen oracle sinyali +622805% / %98.7 isabet veriyor.
 - Naif stratejiler (MA-crossover, basit mean-reversion) gün-içinde maliyetleri
