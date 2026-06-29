@@ -131,3 +131,34 @@ def test_session_locks_after_target():
     # En az bir gün bir sonuca (target/stop) ulaşmalı
     assert (result.days["outcome"] != "neutral").any()
     assert result.metrics["total_days"] == 30
+
+
+def test_short_position_pnl():
+    """Short pozisyon, fiyat düşerken kâr etmeli (tek gün, çok bar)."""
+    # Tek işlem günü içinde 30 bar, fiyat 100'den 97'ye düşüyor
+    start = pd.Timestamp("2024-01-02 09:30")
+    idx = pd.DatetimeIndex([start + pd.Timedelta(minutes=5 * b) for b in range(30)])
+    price = pd.Series(np.linspace(100, 97, 30), index=idx)
+    data = pd.DataFrame({"open": price, "high": price * 1.0005,
+                         "low": price * 0.9995, "close": price, "volume": 1}, index=idx)
+    short_sig = pd.Series(-1, index=idx)
+    from src.risk import RiskParams as RP
+    risk = RP(daily_target_pct=4.9, daily_stop_pct=4.9, firm_daily_dd_pct=99,
+              monthly_dd_pct=99, flat_at_session_end=True)
+    r = SessionBacktester(SessionConfig(commission=0, slippage=0), risk).run(data, short_sig)
+    # Düşen piyasada short kâr eder
+    assert r.metrics["final_equity"] > 10_000
+    assert (r.trades["direction"] == "short").all()
+
+
+def test_optimizer_grid_search():
+    from src.optimizer import grid_search, OptConfig
+    data = _make_intraday(days=20)
+    grid = {"lookback": [15, 20], "entry_z": [2.0], "exit_z": [0.5],
+            "stop_loss_pct": [1.0], "take_profit_pct": [1.5], "leverage": [10.0]}
+    df = grid_search(data, grid, OptConfig(), objective="total_return",
+                     n_jobs=1, min_trades=0)
+    assert len(df) == 2
+    assert "total_return" in df.columns
+    # Sıralı (azalan) olmalı
+    assert df["total_return"].iloc[0] >= df["total_return"].iloc[-1]
