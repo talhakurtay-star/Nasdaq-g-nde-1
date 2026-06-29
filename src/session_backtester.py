@@ -47,10 +47,18 @@ class SessionBacktester:
         self.config = config or SessionConfig()
         self.risk = risk or RiskParams()
 
-    def run(self, data: pd.DataFrame, signals: pd.Series) -> SessionResult:
+    def run(self, data: pd.DataFrame, signals: pd.Series,
+            stop_dist_pct: pd.Series | None = None) -> SessionResult:
+        """stop_dist_pct verilirse (her bar için fiyatın %'si olarak stop mesafesi),
+        sabit stop_loss_pct yerine bu volatiliteye-uyarlı (ATR vb.) stop kullanılır;
+        pozisyon, bu mesafede risk_per_trade kadar kaybedecek şekilde boyutlandırılır."""
         cfg, risk = self.config, self.risk
         data = data.copy()
         target_pos = signals.reindex(data.index).fillna(0).shift(1).fillna(0).astype(int)
+        if stop_dist_pct is not None:
+            sd_arr = stop_dist_pct.reindex(data.index).shift(1).to_numpy()
+        else:
+            sd_arr = None
 
         equity = cfg.initial_cash          # gerçekleşmiş (realized) hesap equity'si
         position = 0                       # -1 short, 0 flat, +1 long
@@ -107,16 +115,16 @@ class SessionBacktester:
         tp_frac = risk.take_profit_pct / 100.0
         risk_frac = risk.risk_per_trade_pct / 100.0
 
-        def open_position(direction: int, price: float, ts) -> None:
+        def open_position(direction: int, price: float, ts, sl_now: float) -> None:
             # Long girişte fiyat yukarı (alış), short girişte aşağı (satış) kayar.
             nonlocal position, qty, entry_fill, entry_notional, entry_time, sl_price, tp_price
             fill = price * (1 + direction * slip)
             max_notional = equity * risk.leverage
-            if sl_frac > 0:
+            if sl_now > 0:
                 # SL'e değince risk_frac kadar kayıp olacak şekilde boyutlandır.
-                qty_risk = (equity * risk_frac) / (sl_frac * fill)
+                qty_risk = (equity * risk_frac) / (sl_now * fill)
                 qty = min(qty_risk, max_notional / fill)   # nominali tavanla sınırla
-                sl_price = fill * (1 - direction * sl_frac)
+                sl_price = fill * (1 - direction * sl_now)
                 tp_price = fill * (1 + direction * tp_frac) if tp_frac > 0 else 0.0
             else:
                 qty = max_notional / fill                  # eski all-in davranışı
@@ -198,7 +206,13 @@ class SessionBacktester:
                     day_records[cur_day]["trades"] += 1
                 # Yeni pozisyon: gün sonu barında değil ve günlük limit dolmadıysa
                 if desired != 0 and not is_day_end and not entries_full:
-                    open_position(desired, o, idx[i])
+                    # ATR-bazlı stop verildiyse onu, yoksa sabit stop_loss_pct'i kullan
+                    if sd_arr is not None:
+                        sd = sd_arr[i]
+                        sl_now = (sd / 100.0) if (sd == sd and sd > 0) else sl_frac
+                    else:
+                        sl_now = sl_frac
+                    open_position(desired, o, idx[i], sl_now)
                     entries_today += 1
 
             # 2) Bar içi tetikleyiciler: işlem-bazlı SL/TP + günlük hesap taban/target.
