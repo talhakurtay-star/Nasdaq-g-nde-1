@@ -44,8 +44,9 @@ def parse_args():
     # Günlük kilit / risk
     p.add_argument("--target", type=float, default=0.44, help="Günlük kâr hedefi %% (kilit)")
     p.add_argument("--stop", type=float, default=0.44, help="Günlük kayıp stop'u %%")
-    p.add_argument("--lock", choices=["hard", "breakeven", "trail"], default="hard",
-                   help="Hedefe ulaşınca: hard=kapat+kilitle, breakeven/trail=koştur")
+    p.add_argument("--lock", choices=["hard", "breakeven", "trail"], default="breakeven",
+                   help="Hedefe ulaşınca: hard=kapat+kilitle (kazananı keser), "
+                        "breakeven=stop'u başabaşa çek+koştur (kuyruğu yakalar, ÖNERİLEN), trail=trailing")
     p.add_argument("--lev", type=float, default=2.0, help="Kaldıraç (boyut tavanı)")
     p.add_argument("--sl", type=float, default=1.5, help="İşlem stop'u %% (0=all-in)")
     p.add_argument("--risk", type=float, default=0.30, help="İşlem başına risk %%")
