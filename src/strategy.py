@@ -135,6 +135,10 @@ class OpeningRangeBreakout:
     allow_long: bool = True
     allow_short: bool = True
     buffer_pct: float = 0.0
+    # Konviksiyon filtresi: açılış aralığı (OR) genişliği fiyatın %'si olarak
+    # bu aralıkta değilse o gün işlem yapma. (Yalnız güçlü-momentum günleri.)
+    min_or_range_pct: float = 0.0
+    max_or_range_pct: float = 100.0
 
     def generate_signals(self, data: pd.DataFrame) -> pd.Series:
         idx = data.index
@@ -170,6 +174,11 @@ class OpeningRangeBreakout:
             elif minute[j] >= or_end:
                 break
         if not has_or:
+            return
+        # Konviksiyon filtresi: OR genişliği (fiyatın %'si)
+        or_mid = (or_high + or_low) / 2
+        or_range_pct = (or_high - or_low) / or_mid * 100 if or_mid > 0 else 0
+        if not (self.min_or_range_pct <= or_range_pct <= self.max_or_range_pct):
             return
         up_level = or_high * (1 + buf)
         dn_level = or_low * (1 - buf)

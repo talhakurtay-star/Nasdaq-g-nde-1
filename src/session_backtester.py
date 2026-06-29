@@ -63,10 +63,15 @@ class SessionBacktester:
 
         cur_day = None
         day_start_equity = equity
-        locked_today = False
+        locked_today = False          # gün tamamen kilitli (pozisyon kapalı, yeni işlem yok)
+        entries_locked = False        # sadece yeni işlem yok (pozisyon koşmaya devam edebilir)
+        target_reached = False        # gün +target'a değdi mi
+        day_floor_equity = 0.0        # etkin günlük zarar tabanı (yükselebilir)
         entries_today = 0
         target_equity = stop_equity = 0.0
         max_entries = risk.max_trades_per_day
+        lock_mode = risk.profit_lock_mode
+        trail_amt = risk.trail_pct / 100.0   # gün başı equity oranı
 
         cur_month = None
         month_start_equity = equity
@@ -159,9 +164,12 @@ class SessionBacktester:
                 cur_day = d
                 day_start_equity = equity
                 locked_today = False
+                entries_locked = False
+                target_reached = False
                 entries_today = 0
                 target_equity = day_start_equity * (1 + risk.daily_target)
                 stop_equity = day_start_equity * (1 - risk.daily_stop)
+                day_floor_equity = stop_equity
                 day_records[d] = {
                     "date": d, "start_equity": day_start_equity,
                     "outcome": "neutral", "trades": 0,
@@ -176,8 +184,12 @@ class SessionBacktester:
             desired = int(target_arr[i])       # -1 / 0 / +1
             # Kilitli, aylık kilitli, seans dışı ya da günlük işlem limiti dolduysa pozisyon yok.
             entries_full = max_entries > 0 and entries_today >= max_entries
+            # entries_locked: +target sonrası yeni işlem yok ama mevcut pozisyon korunur;
+            # bu yüzden yön DEĞİŞTİRMEYİ de engelle (sadece mevcut pozisyonu tut).
             if locked_today or month_locked or not in_session_arr[i]:
                 desired = 0
+            elif entries_locked:
+                desired = position           # değişiklik yok, pozisyonu olduğu gibi tut
 
             # 1) Bar açılışında strateji kaynaklı yön değişimi (gerekirse ters çevir)
             if desired != position:
@@ -189,26 +201,23 @@ class SessionBacktester:
                     open_position(desired, o, idx[i])
                     entries_today += 1
 
-            # 2) Bar içi tetikleyiciler: işlem-bazlı SL/TP + günlük hesap target/stop.
-            #    Aynı yönde birden çok eşik varsa "önce değen" (girişe en yakın) seçilir.
-            #    Sadece günlük target/stop günü kilitler; işlem SL/TP'si günü kapatmaz.
+            # 2) Bar içi tetikleyiciler: işlem-bazlı SL/TP + günlük hesap taban/target.
+            #    Zarar tarafı etkin günlük tabanı (day_floor_equity) kullanır; bu taban
+            #    +target sonrası (breakeven/trail modunda) yükselebilir.
             if position != 0 and not locked_today:
                 # mark(p) = equity + position*(p - entry_fill)*qty  →  hesap eşik fiyatları:
-                daily_stop_p = entry_fill + position * (stop_equity - equity) / qty
+                daily_stop_p = entry_fill + position * (day_floor_equity - equity) / qty
                 daily_target_p = entry_fill + position * (target_equity - equity) / qty
 
                 if position == 1:
-                    # Zarar (fiyat düşer): girişe en yakın = en yüksek tetik
                     loss_p, loss_daily = daily_stop_p, True
                     if sl_price and sl_price > loss_p:
                         loss_p, loss_daily = sl_price, False
-                    # Kâr (fiyat yükselir): girişe en yakın = en düşük tetik
                     prof_p, prof_daily = daily_target_p, True
                     if tp_price and tp_price < prof_p:
                         prof_p, prof_daily = tp_price, False
                     hit_loss, hit_prof = l <= loss_p, h >= prof_p
                 else:
-                    # Short: zarar fiyat yükselince (en düşük tetik), kâr fiyat düşünce
                     loss_p, loss_daily = daily_stop_p, True
                     if sl_price and sl_price < loss_p:
                         loss_p, loss_daily = sl_price, False
@@ -222,15 +231,30 @@ class SessionBacktester:
                                    "daily_stop" if loss_daily else "stop_loss")
                     day_records[cur_day]["trades"] += 1
                     if loss_daily:
-                        day_records[cur_day]["outcome"] = "stop"
+                        # Günlük taban tetiklendi: target'a değdiyse "target" (artıda banklandı),
+                        # değmediyse "stop".
+                        day_records[cur_day]["outcome"] = "target" if target_reached else "stop"
                         locked_today = True
-                elif hit_prof:
-                    close_position(prof_p / (1 - position * slip), idx[i],
-                                   "daily_target" if prof_daily else "take_profit")
-                    day_records[cur_day]["trades"] += 1
-                    if prof_daily:
-                        day_records[cur_day]["outcome"] = "target"
+                elif hit_prof and not target_reached:
+                    target_reached = True
+                    day_records[cur_day]["outcome"] = "target"
+                    if prof_daily and lock_mode == "hard":
+                        close_position(prof_p / (1 - position * slip), idx[i], "daily_target")
+                        day_records[cur_day]["trades"] += 1
                         locked_today = True
+                    elif prof_daily:
+                        # Yumuşak mod: KAPATMA, yeni işlem yok, tabanı yükselt.
+                        entries_locked = True
+                        if lock_mode == "breakeven":
+                            day_floor_equity = max(day_floor_equity, day_start_equity)
+                        else:  # trail: tepe - trail
+                            day_floor_equity = max(day_floor_equity,
+                                                   target_equity - day_start_equity * trail_amt)
+                    else:
+                        # işlem-bazlı TP (tp_price) hedefe değil, normal kapat
+                        close_position(prof_p / (1 - position * slip), idx[i], "take_profit")
+                        day_records[cur_day]["trades"] += 1
+                        target_reached = False  # bu bir gün-hedefi değildi
 
             # 3) Gün sonu: açık pozisyonu kapat
             if is_day_end and position != 0 and risk.flat_at_session_end:
@@ -241,19 +265,29 @@ class SessionBacktester:
             mark = mark_to_market(c)
             equity_curve.append(mark)
 
-            # 5) Kümülatif gün P&L'i eşiği geçtiyse günü kilitle.
-            #    (Pozisyon dışıyken sinyalle biriken küçük zararlar/kârlar da
-            #     stop/target'ı aşmasın diye; yeni işlem açılmaz.)
+            # 4b) Trail modu: hedefe değdikten sonra tabanı tepe-altı takip ettir
+            if target_reached and lock_mode == "trail" and not locked_today:
+                day_floor_equity = max(day_floor_equity, mark - day_start_equity * trail_amt)
+
+            # 5) Kümülatif gün P&L'i eşik kontrolü (pozisyon dışıyken biriken drift dahil)
             if not locked_today:
-                day_pl = mark / day_start_equity - 1
-                if day_pl <= -risk.daily_stop:
+                if mark <= day_floor_equity:
                     locked_today = True
                     if day_records[cur_day]["outcome"] == "neutral":
-                        day_records[cur_day]["outcome"] = "stop"
-                elif day_pl >= risk.daily_target:
-                    locked_today = True
+                        day_records[cur_day]["outcome"] = "target" if target_reached else "stop"
+                elif not target_reached and mark >= target_equity:
+                    target_reached = True
                     if day_records[cur_day]["outcome"] == "neutral":
                         day_records[cur_day]["outcome"] = "target"
+                    if lock_mode == "hard":
+                        locked_today = True
+                    else:
+                        entries_locked = True
+                        if lock_mode == "breakeven":
+                            day_floor_equity = max(day_floor_equity, day_start_equity)
+                        else:
+                            day_floor_equity = max(day_floor_equity,
+                                                   target_equity - day_start_equity * trail_amt)
 
             # Gün sonu kaydını tamamla
             if is_day_end:

@@ -36,6 +36,16 @@ class RiskParams:
     take_profit_pct: float = 0.0      # işlem başına fiyat hedefi % (0 = kapalı)
     risk_per_trade_pct: float = 0.15  # SL'e değince kaybedilecek sermaye %'si
 
+    # --- Günlük hedefe ulaşınca davranış ---
+    # "hard"      : +target'a değince pozisyonu kapat, günü kilitle (klasik lock).
+    # "breakeven" : +target'a değince KAPATMA; günlük stop'u başabaşa (gün başı equity)
+    #               çek ve bırak koşsun. Yeni işlem açma. → günü artıda bitirme garantisi,
+    #               ama kazananı kesmeden.
+    # "trail"     : +target'a değince stop'u, tepe equity'nin trail_pct altına kadar
+    #               takip ettir (kazancın bir kısmını koruyarak koştur).
+    profit_lock_mode: str = "hard"
+    trail_pct: float = 0.20           # "trail" modunda tepe-altı koruma (gün başı equity %'si)
+
     # --- Seans davranışı ---
     flat_at_session_end: bool = True  # gün sonunda pozisyonu kapat (overnight gap riski yok)
     leverage: float = 1.0             # max nominal = equity * leverage (boyut tavanı)
