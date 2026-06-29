@@ -92,3 +92,25 @@ def format_metrics(metrics: dict) -> str:
         "─" * 40,
     ]
     return "\n".join(lines)
+
+
+def format_session_summary(days, metrics: dict) -> str:
+    """Prop-firm seans metriklerini okunabilir tabloya çevir."""
+    if "total_days" not in metrics:
+        return ""
+    breach = metrics["firm_daily_breach"]
+    breach_txt = "⚠️  İHLAL VAR!" if breach else "✓ ihlal yok"
+    lines = [
+        "  GÜNLÜK SEANS ÖZETİ",
+        "─" * 40,
+        f"  Toplam işlem günü  : {metrics['total_days']:>10d}",
+        f"  Hedefe ulaşan gün  : {metrics['target_days']:>10d}  (%{metrics['target_hit_rate'] * 100:.1f})",
+        f"  Stop olan gün      : {metrics['stop_days']:>10d}",
+        f"  Nötr gün           : {metrics['neutral_days']:>10d}",
+        f"  Ort. günlük getiri : {metrics['avg_daily_return_pct']:>10.3f} %",
+        f"  En iyi gün         : {metrics['best_day_pct']:>10.3f} %",
+        f"  En kötü gün        : {metrics['worst_day_pct']:>10.3f} %",
+        f"  Firma günlük DD    : {breach_txt:>15}",
+        "─" * 40,
+    ]
+    return "\n".join(lines)

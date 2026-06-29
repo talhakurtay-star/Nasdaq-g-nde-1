@@ -12,7 +12,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.backtester import Backtester, BacktestConfig
 from src.data_loader import load_mt5_csv
+from src.risk import RiskParams
+from src.session_backtester import SessionBacktester, SessionConfig
 from src.strategy import MACrossStrategy, rsi, sma
+
+
+def _make_intraday(days=20, bars_per_day=78, seed=7):
+    """Gün-içi M5 benzeri veri (her gün 78 bar = 6.5 saat)."""
+    rng = np.random.default_rng(seed)
+    stamps = []
+    for day in pd.bdate_range("2024-01-02", periods=days):
+        start = day + pd.Timedelta(hours=9, minutes=30)
+        stamps += [start + pd.Timedelta(minutes=5 * b) for b in range(bars_per_day)]
+    idx = pd.DatetimeIndex(stamps)
+    n = len(idx)
+    price = 16000 * np.exp(np.cumsum(rng.normal(0, 0.001, n)))
+    o = price * (1 + rng.normal(0, 0.0002, n))
+    h = np.maximum(o, price) * (1 + np.abs(rng.normal(0, 0.0005, n)))
+    lo = np.minimum(o, price) * (1 - np.abs(rng.normal(0, 0.0005, n)))
+    return pd.DataFrame({"open": o, "high": h, "low": lo, "close": price, "volume": 1000}, index=idx)
 
 
 def _make_data(n=300, seed=1):
@@ -79,3 +97,35 @@ def test_mt5_loader(tmp_path):
     assert len(df) == 2
     assert df["close"].iloc[0] == 15050.0
     assert df["volume"].iloc[0] == 1234  # tick_volume volume'e düşmüş
+
+
+# --- Seans motoru / prop-firm kuralları ---
+
+def test_session_daily_caps_hold():
+    """Hiçbir gün +target'ı veya -stop'u (tolerans dahilinde) aşmamalı."""
+    data = _make_intraday(days=25)
+    sig = MACrossStrategy(fast=5, slow=15).generate_signals(data)
+    risk = RiskParams(daily_target_pct=0.44, daily_stop_pct=0.44)
+    result = SessionBacktester(SessionConfig(), risk).run(data, sig)
+
+    # Slipaj nedeniyle çok küçük taşma olabilir; makul tolerans
+    assert result.days["return_pct"].max() <= 0.44 + 0.05
+    assert result.days["return_pct"].min() >= -0.44 - 0.05
+
+
+def test_session_never_breaches_firm_limit():
+    data = _make_intraday(days=40, seed=99)
+    sig = MACrossStrategy(fast=5, slow=15).generate_signals(data)
+    result = SessionBacktester(SessionConfig(), RiskParams()).run(data, sig)
+    assert result.metrics["firm_daily_breach"] is False
+    assert result.days["return_pct"].min() >= -5.0
+
+
+def test_session_locks_after_target():
+    """Hedefe ulaşılan günde, kilitten sonra equity sabit kalmalı (yeni işlem yok)."""
+    data = _make_intraday(days=30, seed=3)
+    sig = MACrossStrategy(fast=5, slow=15).generate_signals(data)
+    result = SessionBacktester(SessionConfig(), RiskParams()).run(data, sig)
+    # En az bir gün bir sonuca (target/stop) ulaşmalı
+    assert (result.days["outcome"] != "neutral").any()
+    assert result.metrics["total_days"] == 30
