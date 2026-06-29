@@ -61,6 +61,13 @@ class RiskParams:
     # tekrar tekrar stop yemeyi engeller (örn. ORB için 1).
     max_trades_per_day: int = 0
 
+    # "Son N işlem" soğuma modu: son cooldown_lookback işlemde kazanç sayısı
+    # cooldown_min_wins'in altındaysa, pozisyon boyutu cooldown_factor ile çarpılır
+    # (kötü seride riski azalt). 0 = kapalı.
+    cooldown_lookback: int = 0
+    cooldown_min_wins: int = 0
+    cooldown_factor: float = 0.5
+
     def __post_init__(self) -> None:
         if self.daily_stop_pct > self.firm_daily_dd_pct:
             raise ValueError(

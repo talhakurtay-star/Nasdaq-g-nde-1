@@ -143,11 +143,16 @@ class OpeningRangeBreakout:
     require_close_break: bool = False
     # Trend teyidi: EMA(periyot) yukarıdaysa sadece long, aşağıdaysa sadece short (0 = kapalı).
     trend_ema_period: int = 0
+    # VWAP filtresi: kırılım VWAP'ın doğru tarafındaysa al (long ise close>VWAP). Yanlış taraf = tuzak.
+    vwap_filter: bool = False
+    # Gün filtresi: sadece bu hafta-içi günlerinde işlem (0=Pzt..4=Cum). None = hepsi.
+    weekdays: tuple | None = None
 
     def generate_signals(self, data: pd.DataFrame) -> pd.Series:
         idx = data.index
         minute = (idx.hour * 60 + idx.minute).to_numpy()
         day = idx.normalize().to_numpy()
+        dow = idx.dayofweek.to_numpy()
         high = data["high"].to_numpy()
         low = data["low"].to_numpy()
         close = data["close"].to_numpy()
@@ -155,6 +160,12 @@ class OpeningRangeBreakout:
             ema_arr = ema(data["close"], self.trend_ema_period).to_numpy()
         else:
             ema_arr = None
+        if self.vwap_filter:
+            from . import indicators as _ind
+            vwap_arr = _ind.vwap_daily(data["high"], data["low"], data["close"], data["volume"]).to_numpy()
+        else:
+            vwap_arr = None
+        allowed = set(self.weekdays) if self.weekdays is not None else None
         n = len(idx)
         out = np.zeros(n, dtype=np.int8)
         open_min = self.open_hour * 60
@@ -164,13 +175,15 @@ class OpeningRangeBreakout:
         start = 0
         for k in range(n + 1):
             if k == n or day[k] != day[start]:
-                self._fill_day(out, minute, high, low, close, ema_arr, start, k, open_min, or_end, buf)
+                if allowed is None or dow[start] in allowed:
+                    self._fill_day(out, minute, high, low, close, ema_arr, vwap_arr,
+                                   start, k, open_min, or_end, buf)
                 start = k
                 if k == n:
                     break
         return pd.Series(out, index=idx, dtype=int)
 
-    def _fill_day(self, out, minute, high, low, close, ema_arr, s, e, open_min, or_end, buf):
+    def _fill_day(self, out, minute, high, low, close, ema_arr, vwap_arr, s, e, open_min, or_end, buf):
         # 1) Açılış aralığını (OR) belirle
         or_high, or_low = -np.inf, np.inf
         has_or = False
@@ -206,6 +219,10 @@ class OpeningRangeBreakout:
                     dn_ok = close[j] < ema_arr[j]
                 else:
                     up_ok = dn_ok = True
+                # VWAP filtresi: long ise VWAP üstünde, short ise altında olmalı
+                if vwap_arr is not None and not np.isnan(vwap_arr[j]):
+                    up_ok = up_ok and close[j] > vwap_arr[j]
+                    dn_ok = dn_ok and close[j] < vwap_arr[j]
                 if self.allow_long and broke_up and up_ok:
                     day_dir = 1
                 elif self.allow_short and broke_dn and dn_ok:

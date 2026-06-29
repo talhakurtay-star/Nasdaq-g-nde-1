@@ -115,14 +115,28 @@ class SessionBacktester:
         tp_frac = risk.take_profit_pct / 100.0
         risk_frac = risk.risk_per_trade_pct / 100.0
 
-        def open_position(direction: int, price: float, ts, sl_now: float) -> None:
+        from collections import deque
+        recent_results: deque = deque(maxlen=max(risk.cooldown_lookback, 1))
+
+        def size_factor() -> float:
+            """Soğuma modu: son N işlemde yeterli kazanç yoksa boyutu küçült."""
+            if risk.cooldown_lookback <= 0 or len(recent_results) < risk.cooldown_lookback:
+                return 1.0
+            if sum(recent_results) < risk.cooldown_min_wins:
+                return risk.cooldown_factor
+            return 1.0
+
+        def open_position(direction: int, price: float, ts, sl_now: float) -> bool:
             # Long girişte fiyat yukarı (alış), short girişte aşağı (satış) kayar.
             nonlocal position, qty, entry_fill, entry_notional, entry_time, sl_price, tp_price
             fill = price * (1 + direction * slip)
-            max_notional = equity * risk.leverage
+            sf = size_factor()
+            if sf <= 0:
+                return False                     # soğuma: bu işlemi tamamen atla
+            max_notional = equity * risk.leverage * sf
             if sl_now > 0:
                 # SL'e değince risk_frac kadar kayıp olacak şekilde boyutlandır.
-                qty_risk = (equity * risk_frac) / (sl_now * fill)
+                qty_risk = (equity * risk_frac * sf) / (sl_now * fill)
                 qty = min(qty_risk, max_notional / fill)   # nominali tavanla sınırla
                 sl_price = fill * (1 - direction * sl_now)
                 tp_price = fill * (1 + direction * tp_frac) if tp_frac > 0 else 0.0
@@ -134,6 +148,7 @@ class SessionBacktester:
             entry_notional = qty * fill
             position = direction
             entry_time = ts
+            return True
 
         def close_position(price: float, ts, reason: str) -> None:
             # Long çıkışta satış (fiyat aşağı), short çıkışta alış (fiyat yukarı) kayar.
@@ -150,6 +165,7 @@ class SessionBacktester:
                 "return_pct": position * (exit_fill / entry_fill - 1) * 100,
                 "reason": reason,
             })
+            recent_results.append(1 if (pnl_gross - costs) > 0 else 0)
             qty = 0.0
             position = 0
 
@@ -212,8 +228,8 @@ class SessionBacktester:
                         sl_now = (sd / 100.0) if (sd == sd and sd > 0) else sl_frac
                     else:
                         sl_now = sl_frac
-                    open_position(desired, o, idx[i], sl_now)
-                    entries_today += 1
+                    if open_position(desired, o, idx[i], sl_now):
+                        entries_today += 1
 
             # 2) Bar içi tetikleyiciler: işlem-bazlı SL/TP + günlük hesap taban/target.
             #    Zarar tarafı etkin günlük tabanı (day_floor_equity) kullanır; bu taban
