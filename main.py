@@ -1,21 +1,16 @@
-"""Nasdaq prop-firm backtest botu - ana giriş noktası.
+"""Nasdaq Prop-Firm Botu — ana çalıştırıcı.
 
-Çalışma mantığı (seans modu):
-  - Bot her gün küçük bir hedefi (varsayılan %0.44) yakalamaya çalışır.
-  - Hedefe ulaşınca O GÜN kilitlenir, başka işlem yapmaz.
-  - Günlük kayıp stop'una (%0.44) değince de o gün kilitlenir.
-  - Aylık ~22 işlem günü → bileşik ~%10 (ama hedefi kovalamayız, günlük çalışırız).
+Günde %0.44'e ulaşınca KENDİNİ KİLİTLER (o gün başka işlem yapmaz).
+En iyi doğrulanmış strateji varsayılan: Opening Range Breakout (ORB).
 
 Kullanım:
-    # Önce örnek gün-içi veri üret:
-    python tools/generate_sample_data.py --tf M5
+    python main.py --data data/NAS100_M5.csv
+    python main.py --data data/NAS100_M5.csv --strategy orb --lock hard
+    python main.py --data data/NAS100_M5.csv --strategy meanrev --plot eq.png
+    python main.py --data data/NAS100_M5.csv --target 0.44 --stop 0.44 --lev 2
 
-    # Backtest (seans modu varsayılan):
-    python main.py --data data/SAMPLE_NDX_M5.csv
-    python main.py --data data/NDX_M5.csv --target 0.44 --stop 0.44 --plot eq.png
-
-    # Klasik (gün-içi kilitsiz) mod:
-    python main.py --data data/NDX_D1.csv --mode simple
+Stratejiler: orb (varsayılan), meanrev, macross
+Kilit modu (--lock): hard (klasik), breakeven, trail
 """
 
 from __future__ import annotations
@@ -23,104 +18,113 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.backtester import Backtester, BacktestConfig
 from src.data_loader import load_mt5_csv
 from src.risk import RiskParams
 from src.session_backtester import SessionBacktester, SessionConfig
-from src.strategy import MACrossStrategy
+from src.strategy import MACrossStrategy, MeanReversionStrategy, OpeningRangeBreakout
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="MT5 verisiyle Nasdaq prop-firm backtest botu")
+def build_strategy(args):
+    if args.strategy == "orb":
+        return OpeningRangeBreakout(
+            open_hour=args.open_hour, or_minutes=args.or_minutes,
+            require_close_break=args.close_break,
+            trend_ema_period=args.trend_ema,
+            min_or_range_pct=args.min_or,
+        )
+    if args.strategy == "meanrev":
+        return MeanReversionStrategy(lookback=args.lookback, entry_z=args.entry_z)
+    return MACrossStrategy(fast=args.fast, slow=args.slow, ma_type=args.ma)
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Nasdaq prop-firm botu (0.44 günlük kilit)")
     p.add_argument("--data", required=True, help="MT5 CSV dosya yolu")
-    p.add_argument("--mode", choices=["session", "simple"], default="session",
-                   help="session: günlük kilit + risk kuralları; simple: klasik")
-    # Strateji
-    p.add_argument("--fast", type=int, default=20, help="Hızlı MA periyodu")
-    p.add_argument("--slow", type=int, default=50, help="Yavaş MA periyodu")
-    p.add_argument("--ma", choices=["sma", "ema"], default="ema", help="MA tipi")
-    p.add_argument("--no-rsi", action="store_true", help="RSI filtresini kapat")
-    p.add_argument("--rsi-ob", type=float, default=70.0, help="RSI aşırı alım seviyesi")
-    # Risk / seans
-    p.add_argument("--target", type=float, default=0.44, help="Günlük kâr hedefi %%")
+    p.add_argument("--strategy", choices=["orb", "meanrev", "macross"], default="orb")
+    # Günlük kilit / risk
+    p.add_argument("--target", type=float, default=0.44, help="Günlük kâr hedefi %% (kilit)")
     p.add_argument("--stop", type=float, default=0.44, help="Günlük kayıp stop'u %%")
-    p.add_argument("--monthly-dd", type=float, default=10.0, help="Aylık max DD %% (firma)")
-    p.add_argument("--leverage", type=float, default=1.0, help="Kaldıraç (1.0 = yok)")
-    # Hesap
-    p.add_argument("--cash", type=float, default=10_000.0, help="Başlangıç sermayesi")
-    p.add_argument("--commission", type=float, default=0.0005, help="Komisyon oranı")
-    p.add_argument("--slippage", type=float, default=0.0002, help="Slipaj oranı")
-    p.add_argument("--plot", default=None, help="Equity eğrisini bu PNG'ye kaydet")
+    p.add_argument("--lock", choices=["hard", "breakeven", "trail"], default="hard",
+                   help="Hedefe ulaşınca: hard=kapat+kilitle, breakeven/trail=koştur")
+    p.add_argument("--lev", type=float, default=2.0, help="Kaldıraç (boyut tavanı)")
+    p.add_argument("--sl", type=float, default=1.5, help="İşlem stop'u %% (0=all-in)")
+    p.add_argument("--risk", type=float, default=0.30, help="İşlem başına risk %%")
+    p.add_argument("--session", nargs=2, type=int, default=[16, 22],
+                   help="İşlem saati penceresi (broker saati)")
+    p.add_argument("--max-trades", type=int, default=1, help="Günde max işlem (0=sınırsız)")
+    # ORB
+    p.add_argument("--open-hour", type=int, default=16)
+    p.add_argument("--or-minutes", type=int, default=30)
+    p.add_argument("--close-break", action="store_true")
+    p.add_argument("--trend-ema", type=int, default=0)
+    p.add_argument("--min-or", type=float, default=0.0)
+    # meanrev / macross
+    p.add_argument("--lookback", type=int, default=20)
+    p.add_argument("--entry-z", type=float, default=2.0)
+    p.add_argument("--fast", type=int, default=20)
+    p.add_argument("--slow", type=int, default=50)
+    p.add_argument("--ma", choices=["sma", "ema"], default="ema")
+    # Hesap / maliyet
+    p.add_argument("--cash", type=float, default=10_000.0)
+    p.add_argument("--commission", type=float, default=0.0002)
+    p.add_argument("--slippage", type=float, default=0.0001)
+    p.add_argument("--plot", default=None)
     return p.parse_args()
 
 
-def main() -> None:
+def main():
     args = parse_args()
-
     print(f"Veri yükleniyor: {args.data}")
     data = load_mt5_csv(args.data)
-    print(f"  {len(data)} bar | {data.index[0]} → {data.index[-1]}")
+    yrs = (data.index[-1] - data.index[0]).days / 365.25
+    print(f"  {len(data)} bar | {data.index[0]} → {data.index[-1]} ({yrs:.1f} yıl)")
+    print(f"  Strateji: {args.strategy} | günlük kilit: +{args.target}% ({args.lock}) | "
+          f"saat {args.session[0]}-{args.session[1]}\n")
 
-    strategy = MACrossStrategy(
-        fast=args.fast, slow=args.slow, ma_type=args.ma,
-        use_rsi=not args.no_rsi, rsi_overbought=args.rsi_ob,
-    )
+    strategy = build_strategy(args)
     signals = strategy.generate_signals(data)
 
-    if args.mode == "session":
-        risk = RiskParams(
-            daily_target_pct=args.target,
-            daily_stop_pct=args.stop,
-            monthly_dd_pct=args.monthly_dd,
-            leverage=args.leverage,
-        )
-        config = SessionConfig(
-            initial_cash=args.cash, commission=args.commission, slippage=args.slippage,
-        )
-        result = SessionBacktester(config, risk).run(data, signals)
-    else:
-        config = BacktestConfig(
-            initial_cash=args.cash, commission=args.commission, slippage=args.slippage,
-        )
-        result = Backtester(config).run(data, signals)
+    risk = RiskParams(
+        daily_target_pct=args.target, daily_stop_pct=args.stop,
+        profit_lock_mode=args.lock, leverage=args.lev,
+        stop_loss_pct=args.sl, risk_per_trade_pct=args.risk,
+        session_start_hour=args.session[0], session_end_hour=args.session[1],
+        max_trades_per_day=args.max_trades,
+    )
+    config = SessionConfig(args.cash, args.commission, args.slippage)
+    result = SessionBacktester(config, risk).run(data, signals)
 
-    print()
     print(result.summary())
 
-    bh_return = (data["close"].iloc[-1] / data["close"].iloc[0] - 1) * 100
-    print(f"\n  (Kıyas) Al & Tut getirisi: {bh_return:.2f} %")
+    m = result.metrics
+    if m.get("total_days"):
+        ann = ((1 + m["total_return"]) ** (1 / yrs) - 1) * 100 if yrs > 0 else 0
+        print(f"\n  Yıllık (bileşik) : {ann:+.2f} %")
+        print(f"  Ortalama günlük  : {m['avg_daily_return_pct']:+.4f} %  "
+              f"(hedef: +{args.target} %)")
+        print(f"  {args.cash:.0f}$ → {args.cash * (1 + m['total_return']):.0f}$")
 
     if args.plot:
-        save_plot(result, data, Path(args.plot))
+        _plot(result, data, Path(args.plot))
 
 
-def save_plot(result, data, path: Path) -> None:
+def _plot(result, data, path):
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        print("matplotlib kurulu değil; grafik atlanıyor.")
+        print("matplotlib yok; grafik atlandı.")
         return
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True,
-                                   gridspec_kw={"height_ratios": [2, 1]})
-    ax1.plot(result.equity.index, result.equity.values, label="Strateji equity", color="#1f77b4")
-    bh = data["close"] / data["close"].iloc[0] * result.equity.iloc[0]
-    ax1.plot(bh.index, bh.values, label="Al & Tut", color="gray", alpha=0.6, linestyle="--")
-    ax1.set_title("Equity Eğrisi")
-    ax1.legend()
-    ax1.grid(alpha=0.3)
-
-    running_max = result.equity.cummax()
-    dd = (result.equity / running_max - 1) * 100
-    ax2.fill_between(dd.index, dd.values, 0, color="red", alpha=0.3)
-    ax2.set_title("Düşüş (Drawdown) %")
-    ax2.grid(alpha=0.3)
-
-    fig.tight_layout()
-    fig.savefig(path, dpi=120)
-    print(f"\nGrafik kaydedildi: {path}")
+    fig, (a1, a2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True,
+                                 gridspec_kw={"height_ratios": [2, 1]})
+    a1.plot(result.equity.index, result.equity.values, color="#1f77b4", label="Bot equity")
+    a1.set_title("Equity Eğrisi"); a1.legend(); a1.grid(alpha=0.3)
+    dd = (result.equity / result.equity.cummax() - 1) * 100
+    a2.fill_between(dd.index, dd.values, 0, color="red", alpha=0.3)
+    a2.set_title("Drawdown %"); a2.grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(path, dpi=120)
+    print(f"\nGrafik: {path}")
 
 
 if __name__ == "__main__":
