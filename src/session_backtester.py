@@ -14,8 +14,9 @@ kötümser kabulle ÖNCE stop uygulanır.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from .metrics import compute_metrics
@@ -72,8 +73,20 @@ class SessionBacktester:
         day_records: dict = {}
 
         idx = data.index
-        opens, highs, lows, closes = data["open"], data["high"], data["low"], data["close"]
         n = len(idx)
+        # Hız için tüm seri erişimlerini numpy dizilerine çevir (.iloc döngüde çok yavaş).
+        opens = data["open"].to_numpy()
+        highs = data["high"].to_numpy()
+        lows = data["low"].to_numpy()
+        closes = data["close"].to_numpy()
+        target_arr = target_pos.to_numpy()
+        # Gün/ay anahtarlarını ve gün-sonu bayrağını önceden vektörel hesapla.
+        day_key = idx.normalize().to_numpy()          # her bar için takvim günü
+        month_key = (idx.year * 100 + idx.month).to_numpy()
+        is_day_end_arr = np.empty(n, dtype=bool)
+        if n:
+            is_day_end_arr[-1] = True
+            is_day_end_arr[:-1] = day_key[1:] != day_key[:-1]
 
         def open_long(price: float, ts) -> None:
             nonlocal cash, shares, position, entry_price, entry_time
@@ -106,11 +119,9 @@ class SessionBacktester:
             position = 0
 
         for i in range(n):
-            ts = idx[i]
-            d = ts.normalize()                 # gün anahtarı
-            m = (ts.year, ts.month)
-            is_last = (i == n - 1)
-            is_day_end = is_last or idx[i + 1].normalize() != d
+            d = day_key[i]                     # gün anahtarı (numpy datetime64)
+            m = month_key[i]
+            is_day_end = is_day_end_arr[i]
 
             # --- Yeni ay ---
             if m != cur_month:
@@ -135,18 +146,18 @@ class SessionBacktester:
                 month_locked = True
                 locked_today = True
 
-            o, h, l, c = opens.iloc[i], highs.iloc[i], lows.iloc[i], closes.iloc[i]
-            desired = target_pos.iloc[i]
+            o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+            desired = target_arr[i]
             if locked_today or month_locked:
                 desired = 0
 
             # 1) Bar açılışında strateji kaynaklı giriş/çıkış
             if desired == 0 and position == 1:
-                close_long(o, ts, "signal")
+                close_long(o, idx[i], "signal")
                 day_records[cur_day]["trades"] += 1
             elif desired == 1 and position == 0 and not is_day_end:
                 # gün sonu barında yeni pozisyon açma (kapatamadan kapanış olur)
-                open_long(o, ts)
+                open_long(o, idx[i])
 
             # 2) Bar içi: kümülatif gün P&L'ine göre target/stop (sadece pozisyondayken)
             if position == 1 and not locked_today:
@@ -155,19 +166,19 @@ class SessionBacktester:
                 target_price = target_equity / shares
                 # kötümser: önce stop
                 if l <= stop_price:
-                    close_long(stop_price / (1 - cfg.slippage), ts, "daily_stop")
+                    close_long(stop_price / (1 - cfg.slippage), idx[i], "daily_stop")
                     day_records[cur_day]["trades"] += 1
                     day_records[cur_day]["outcome"] = "stop"
                     locked_today = True
                 elif h >= target_price:
-                    close_long(target_price / (1 - cfg.slippage), ts, "daily_target")
+                    close_long(target_price / (1 - cfg.slippage), idx[i], "daily_target")
                     day_records[cur_day]["trades"] += 1
                     day_records[cur_day]["outcome"] = "target"
                     locked_today = True
 
             # 3) Gün sonu: açık pozisyonu kapat
             if is_day_end and position == 1 and risk.flat_at_session_end:
-                close_long(c, ts, "session_end")
+                close_long(c, idx[i], "session_end")
                 day_records[cur_day]["trades"] += 1
 
             # 4) Bar kapanışında equity'yi işaretle

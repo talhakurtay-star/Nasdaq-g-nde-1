@@ -74,28 +74,30 @@ class MACrossStrategy:
         fast_ma = ma_func(close, self.fast)
         slow_ma = ma_func(close, self.slow)
 
-        trend_up = fast_ma > slow_ma
+        trend_up = (fast_ma > slow_ma).to_numpy()
 
         if self.use_rsi:
             rsi_vals = rsi(close, self.rsi_period)
-            allow_entry = rsi_vals < self.rsi_overbought
+            allow_entry = (rsi_vals < self.rsi_overbought).to_numpy()
         else:
-            allow_entry = pd.Series(True, index=close.index)
+            allow_entry = np.ones(len(close), dtype=bool)
+
+        valid = (~slow_ma.isna()).to_numpy()
 
         # Pozisyon mantığı: trend yukarıyken (ve giriş izinliyken) long, değilse nakit.
-        # Bir kez girince trend bozulana kadar tutulur.
-        signal = pd.Series(0, index=close.index, dtype=int)
+        # Bir kez girince trend bozulana kadar tutulur. (numpy ile hızlı stateful döngü)
+        n = len(close)
+        out = np.zeros(n, dtype=np.int8)
         in_position = False
-        for i in range(len(close)):
-            if pd.isna(slow_ma.iloc[i]):
-                signal.iloc[i] = 0
+        for i in range(n):
+            if not valid[i]:
+                in_position = False
                 continue
             if not in_position:
-                if trend_up.iloc[i] and allow_entry.iloc[i]:
+                if trend_up[i] and allow_entry[i]:
                     in_position = True
-            else:
-                if not trend_up.iloc[i]:
-                    in_position = False
-            signal.iloc[i] = 1 if in_position else 0
+            elif not trend_up[i]:
+                in_position = False
+            out[i] = 1 if in_position else 0
 
-        return signal
+        return pd.Series(out, index=close.index, dtype=int)
