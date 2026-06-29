@@ -3,6 +3,16 @@
 MetaTrader 5 (MT5) verisiyle çalışan, Python tabanlı bir **gün-içi backtest / simülasyon** botu.
 Prop-firm (FTMO tarzı) disiplini ile çalışır; gerçek para riski yoktur.
 
+---
+
+> ## ⛔ ALTIN KURAL: OVERFITTING YAPMA
+> **Hiçbir strateji/parametre, `tools/overfit_test.py`'den geçmeden "çalışıyor" sayılmaz.**
+> Geçmişe uydurulmuş sonuçlar canlıda çöker. Dört testin (IS/OOS, walk-forward,
+> sembol-arası, duyarlılık) hepsi geçmeli; biri bile ✗ ise strateji **reddedilir**.
+> Detaylar: [`CLAUDE.md`](CLAUDE.md)
+
+---
+
 ## Çalışma Felsefesi
 
 Aylık kazancı **kovalamayız**. Bunun yerine her gün küçük, ulaşılabilir bir hedefi yakalarız:
