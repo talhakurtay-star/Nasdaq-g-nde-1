@@ -67,6 +67,18 @@ python tools/batch_backtest.py                      # çoklu sembol
 - **Sonuç:** "Her gün %0.44" (≈%200/yıl) tek-enstrümanlı basit botla ULAŞILAMAZ.
   Gerçekçi tavan ~%1.5-3/yıl tek edge'le; çoklu doğrulanmış edge ile belki birkaç kat.
 
+## ML Denendi — KANITLANMIŞ (tekrar deneme)
+- Nedensel özellik mühendisliği (`src/ml_features.py`) + HistGradientBoosting,
+  zaman-sıralı bölme, walk-forward, sıfır sızıntı (titizlikle kuruldu).
+- **Walk-forward yön doğruluğu ~%52** (gerçek, kalıcı edge — tüm katlarda tutarlı).
+- **Ama backtest tüm marginlerde NEGATİF** (-%10..-42): %52 doğruluk, maliyeti
+  (komisyon+spread, binlerce işlem) yenecek kadar kalın değil; ayrıca küçük
+  hareketlerde haklı/büyüklerde haksız olabiliyor (magnitude etkisi).
+- **Sonuç:** En sofistike araç bile bu ölçekte/maliyette kâr edemiyor. %52 edge
+  ancak ~sıfır maliyetle (HFT/market-maker) sömürülebilir; perakende erişimi yok.
+- Eğitimde +48% / OOS -8.8% gördük → tek-bölme overfitting'in canlı örneği;
+  walk-forward gerçeği gösterdi.
+
 ## Doğrulanmış Gerçekler (tekrar keşfetme)
 - Motor doğru: geleceği bilen oracle sinyali +622805% / %98.7 isabet veriyor.
 - Naif stratejiler (MA-crossover, basit mean-reversion) gün-içinde maliyetleri
