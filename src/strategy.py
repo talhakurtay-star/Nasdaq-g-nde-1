@@ -112,6 +112,84 @@ class MeanReversionStrategy:
 
 
 @dataclass
+class OpeningRangeBreakout:
+    """Açılış Aralığı Kırılımı (Opening Range Breakout — ORB).
+
+    Veri keşfinde NAS100'de kırılımların ~%76'sı devam ediyor (momentum).
+    Mantık (her gün):
+      - Açılış saatinden (open_hour) itibaren ilk `or_minutes` dakika "açılış aralığı"
+        (OR) sayılır: bu pencerenin en yüksek/en düşüğü belirlenir.
+      - Pencere bittikten sonra fiyat OR-üstünü kırarsa → LONG, OR-altını kırarsa → SHORT.
+      - İlk kırılım yönü gün boyu KİLİTLENİR (whipsaw'da yön değiştirmez).
+      - Çıkış motora bırakılır (gün-sonu kapanışı / günlük target-stop / işlem SL-TP).
+
+    Parametreler (hepsi broker saati / dakika):
+        open_hour: açılış saati (en hareketli saat; NAS100 için ~16).
+        or_minutes: açılış aralığı süresi.
+        allow_long / allow_short: yönleri aç/kapat.
+        buffer_pct: kırılım için OR sınırına eklenen küçük tampon (yanlış kırılımı azaltır).
+    """
+
+    open_hour: int = 16
+    or_minutes: int = 30
+    allow_long: bool = True
+    allow_short: bool = True
+    buffer_pct: float = 0.0
+
+    def generate_signals(self, data: pd.DataFrame) -> pd.Series:
+        idx = data.index
+        minute = (idx.hour * 60 + idx.minute).to_numpy()
+        day = idx.normalize().to_numpy()
+        high = data["high"].to_numpy()
+        low = data["low"].to_numpy()
+        close = data["close"].to_numpy()
+        n = len(idx)
+        out = np.zeros(n, dtype=np.int8)
+        open_min = self.open_hour * 60
+        or_end = open_min + self.or_minutes
+        buf = self.buffer_pct / 100.0
+
+        start = 0
+        for k in range(n + 1):
+            if k == n or day[k] != day[start]:
+                self._fill_day(out, minute, high, low, close, start, k, open_min, or_end, buf)
+                start = k
+                if k == n:
+                    break
+        return pd.Series(out, index=idx, dtype=int)
+
+    def _fill_day(self, out, minute, high, low, close, s, e, open_min, or_end, buf):
+        # 1) Açılış aralığını (OR) belirle
+        or_high, or_low = -np.inf, np.inf
+        has_or = False
+        for j in range(s, e):
+            if open_min <= minute[j] < or_end:
+                or_high = max(or_high, high[j])
+                or_low = min(or_low, low[j])
+                has_or = True
+            elif minute[j] >= or_end:
+                break
+        if not has_or:
+            return
+        up_level = or_high * (1 + buf)
+        dn_level = or_low * (1 - buf)
+
+        # 2) Pencere sonrası ilk kırılımı bul, yönü gün boyu kilitle
+        day_dir = 0
+        for j in range(s, e):
+            if minute[j] < or_end:
+                continue
+            if day_dir == 0:
+                if self.allow_long and high[j] >= up_level:
+                    day_dir = 1
+                elif self.allow_short and low[j] <= dn_level:
+                    day_dir = -1
+                # kırılım barından İTİBAREN sinyal ver (motor sonraki bar açılışında girer)
+            if day_dir != 0:
+                out[j] = day_dir
+
+
+@dataclass
 class MACrossStrategy:
     """Hareketli ortalama kesişimi (opsiyonel RSI filtresi ile).
 

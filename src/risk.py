@@ -40,6 +40,17 @@ class RiskParams:
     flat_at_session_end: bool = True  # gün sonunda pozisyonu kapat (overnight gap riski yok)
     leverage: float = 1.0             # max nominal = equity * leverage (boyut tavanı)
 
+    # --- İşlem saati penceresi (broker saati) ---
+    # Bot yalnızca [session_start_hour, session_end_hour) aralığında pozisyon AÇAR.
+    # Pencere dışında açık pozisyon kapatılır. (Ölü/likiditesiz saatleri elemek için.)
+    # 0..24 verilirse tüm gün açık olur.
+    session_start_hour: int = 0
+    session_end_hour: int = 24
+
+    # Günde en fazla kaç pozisyon AÇILSIN (0 = sınırsız). Overtrading'i ve aynı gün
+    # tekrar tekrar stop yemeyi engeller (örn. ORB için 1).
+    max_trades_per_day: int = 0
+
     def __post_init__(self) -> None:
         if self.daily_stop_pct > self.firm_daily_dd_pct:
             raise ValueError(

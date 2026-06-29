@@ -64,7 +64,9 @@ class SessionBacktester:
         cur_day = None
         day_start_equity = equity
         locked_today = False
+        entries_today = 0
         target_equity = stop_equity = 0.0
+        max_entries = risk.max_trades_per_day
 
         cur_month = None
         month_start_equity = equity
@@ -89,6 +91,9 @@ class SessionBacktester:
         if n:
             is_day_end_arr[-1] = True
             is_day_end_arr[:-1] = day_key[1:] != day_key[:-1]
+        # İşlem saati penceresi (broker saati): pencere dışında pozisyon açılmaz.
+        hours = idx.hour.to_numpy()
+        in_session_arr = (hours >= risk.session_start_hour) & (hours < risk.session_end_hour)
 
         slip = cfg.slippage
         comm = cfg.commission
@@ -154,6 +159,7 @@ class SessionBacktester:
                 cur_day = d
                 day_start_equity = equity
                 locked_today = False
+                entries_today = 0
                 target_equity = day_start_equity * (1 + risk.daily_target)
                 stop_equity = day_start_equity * (1 - risk.daily_stop)
                 day_records[d] = {
@@ -168,7 +174,9 @@ class SessionBacktester:
 
             o, h, l, c = opens[i], highs[i], lows[i], closes[i]
             desired = int(target_arr[i])       # -1 / 0 / +1
-            if locked_today or month_locked:
+            # Kilitli, aylık kilitli, seans dışı ya da günlük işlem limiti dolduysa pozisyon yok.
+            entries_full = max_entries > 0 and entries_today >= max_entries
+            if locked_today or month_locked or not in_session_arr[i]:
                 desired = 0
 
             # 1) Bar açılışında strateji kaynaklı yön değişimi (gerekirse ters çevir)
@@ -176,9 +184,10 @@ class SessionBacktester:
                 if position != 0:
                     close_position(o, idx[i], "signal")
                     day_records[cur_day]["trades"] += 1
-                if desired != 0 and not is_day_end:
-                    # gün sonu barında yeni pozisyon açma (kapatamadan kapanış olur)
+                # Yeni pozisyon: gün sonu barında değil ve günlük limit dolmadıysa
+                if desired != 0 and not is_day_end and not entries_full:
                     open_position(desired, o, idx[i])
+                    entries_today += 1
 
             # 2) Bar içi tetikleyiciler: işlem-bazlı SL/TP + günlük hesap target/stop.
             #    Aynı yönde birden çok eşik varsa "önce değen" (girişe en yakın) seçilir.

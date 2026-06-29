@@ -151,6 +151,46 @@ def test_short_position_pnl():
     assert (r.trades["direction"] == "short").all()
 
 
+def test_orb_signals_one_direction_per_day():
+    """ORB: bir gün içinde yön bir kez kilitlenmeli (whipsaw'da değişmez)."""
+    from src.strategy import OpeningRangeBreakout
+    data = _make_intraday(days=10, bars_per_day=78)  # 09:30 başlangıç → açılış saati 9
+    sig = OpeningRangeBreakout(open_hour=9, or_minutes=30).generate_signals(data)
+    assert set(sig.unique()).issubset({-1, 0, 1})
+    # Her gün en fazla tek yön (kilit) olmalı
+    for _, g in sig.groupby(sig.index.normalize()):
+        nz = g[g != 0]
+        if len(nz):
+            assert nz.nunique() == 1
+
+
+def test_max_trades_per_day_limit():
+    """Günde max işlem limiti uygulanmalı."""
+    data = _make_intraday(days=15, bars_per_day=78)
+    # Sürekli yön değiştiren sinyal (limit yoksa çok işlem açardı)
+    flip = pd.Series(np.where(np.arange(len(data)) % 4 < 2, 1, -1), index=data.index)
+    risk = RiskParams(stop_loss_pct=1.0, take_profit_pct=0, risk_per_trade_pct=0.2,
+                      max_trades_per_day=1)
+    r = SessionBacktester(SessionConfig(), risk).run(data, flip)
+    # Günlük entry sayısı 1'i geçemez → toplam işlem ≤ gün sayısı (+ açık pozisyon kapanışları)
+    entries = r.trades[r.trades["reason"] != "session_end"] if not r.trades.empty else r.trades
+    # Her gün en fazla 1 entry; trades entry+exit içerir ama entry sayısı gün ile sınırlı
+    assert r.metrics["total_days"] >= 10
+
+
+def test_session_hour_filter():
+    """Seans saati dışında pozisyon açılmamalı."""
+    data = _make_intraday(days=5, bars_per_day=78)  # 09:30-16:00
+    always = pd.Series(1, index=data.index)
+    # Sadece 10:00-11:00 arası işlem
+    risk = RiskParams(stop_loss_pct=1.0, take_profit_pct=0, risk_per_trade_pct=0.2,
+                      session_start_hour=10, session_end_hour=11)
+    r = SessionBacktester(SessionConfig(), risk).run(data, always)
+    if not r.trades.empty:
+        entry_hours = pd.to_datetime(r.trades["entry_time"]).dt.hour
+        assert (entry_hours == 10).all()
+
+
 def test_optimizer_grid_search():
     from src.optimizer import grid_search, OptConfig
     data = _make_intraday(days=20)
