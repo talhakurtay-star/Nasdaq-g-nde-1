@@ -191,6 +191,34 @@ def test_session_hour_filter():
         assert (entry_hours == 10).all()
 
 
+def test_indicators_sane():
+    from src import indicators as ind
+    data = _make_intraday(days=20)
+    h, l, c, v = data["high"], data["low"], data["close"], data["volume"]
+    assert ind.atr(h, l, c, 14).dropna().ge(0).all()           # ATR >= 0
+    r = ind.rsi(c, 14).dropna()
+    assert r.ge(0).all() and r.le(100).all()                   # RSI 0..100
+    st = ind.supertrend(h, l, c, 10, 3.0).dropna()
+    assert set(st.unique()).issubset({-1, 1})                  # yön ±1
+    vw = ind.vwap_daily(h, l, c, v)
+    assert vw.notna().sum() > 0
+
+
+def test_ml_features_causal_no_leak():
+    """ml_features nedensel olmalı: geçmiş barları değiştirmek geleceği etkilemez,
+    ama bir barın özelliği SADECE o ana kadarki veriden gelir (lookahead yok)."""
+    from src.ml_features import FEATURE_COLS, build_features
+    data = _make_intraday(days=30)
+    f_full = build_features(data)[FEATURE_COLS]
+    # İlk yarıyı kes: kesim noktasına kadarki özellikler birebir aynı kalmalı
+    cut = len(data) // 2
+    f_half = build_features(data.iloc[:cut])[FEATURE_COLS]
+    common = f_full.iloc[:cut].dropna()
+    idx = common.index.intersection(f_half.dropna().index)
+    # Geleceği görmediği için kesim öncesi değerler değişmemeli
+    pd.testing.assert_frame_equal(f_full.loc[idx], f_half.loc[idx], rtol=1e-9)
+
+
 def test_monthly_breakdown():
     from src.metrics import monthly_breakdown
     idx = pd.date_range("2024-01-01", periods=90, freq="D")
