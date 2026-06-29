@@ -69,7 +69,41 @@ def parse_args():
     p.add_argument("--commission", type=float, default=0.0002)
     p.add_argument("--slippage", type=float, default=0.0001)
     p.add_argument("--plot", default=None)
+    p.add_argument("--today", action="store_true",
+                   help="Backtest yerine: en güncel günün sinyalini/kararını göster")
     return p.parse_args()
+
+
+def show_today(data, signals, args) -> None:
+    """En güncel günün sinyal durumunu ve botun kararını yazdır."""
+    last_day = data.index.normalize()[-1]
+    mask = data.index.normalize() == last_day
+    day_sig = signals[mask]
+    day_data = data[mask]
+    cur = int(day_sig.iloc[-1]) if len(day_sig) else 0
+    yon = {1: "🟢 LONG (AL)", -1: "🔴 SHORT (SAT)", 0: "⚪ BEKLE / pozisyon yok"}[cur]
+
+    print("\n" + "═" * 50)
+    print(f"  BUGÜNKÜ KARAR — {last_day.date()}")
+    print("═" * 50)
+    print(f"  Son bar      : {data.index[-1]}  fiyat {data['close'].iloc[-1]:.2f}")
+    print(f"  Botun kararı : {yon}")
+    # İlk sinyalin oluştuğu an
+    nz = day_sig[day_sig != 0]
+    if len(nz):
+        first = nz.index[0]
+        d0 = int(nz.iloc[0])
+        print(f"  Sinyal saati : {first.strftime('%H:%M')} ({'yukarı kırılım' if d0==1 else 'aşağı kırılım'})")
+    if args.strategy == "orb":
+        from src.strategy import OpeningRangeBreakout  # OR seviyelerini göster
+        open_min = args.open_hour * 60
+        mins = day_data.index.hour * 60 + day_data.index.minute
+        orw = day_data[(mins >= open_min) & (mins < open_min + args.or_minutes)]
+        if len(orw):
+            print(f"  Açılış aralığı: {orw['low'].min():.2f} – {orw['high'].max():.2f} "
+                  f"(saat {args.open_hour}:00 sonrası {args.or_minutes}dk)")
+    print("═" * 50)
+    print("  Not: Bu eğitim/araştırma çıktısıdır; yatırım tavsiyesi değildir.")
 
 
 def main():
@@ -83,6 +117,10 @@ def main():
 
     strategy = build_strategy(args)
     signals = strategy.generate_signals(data)
+
+    if args.today:
+        show_today(data, signals, args)
+        return
 
     risk = RiskParams(
         daily_target_pct=args.target, daily_stop_pct=args.stop,

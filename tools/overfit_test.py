@@ -28,34 +28,42 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.data_loader import load_mt5_csv
 from src.optimizer import OptConfig, evaluate, grid_search
 
-# Taranan parametre ızgarası (mean-reversion + risk).
-# Not: risk-bazlı boyutlandırmada asıl etkili büyüklük risk_per_trade_pct'tir;
-# leverage yalnızca bir tavan olduğundan sabit (bağlamayan) tutulur.
-DEFAULT_GRID = {
-    "lookback": [15, 20, 30, 50],
-    "entry_z": [1.5, 2.0, 2.5],
-    "exit_z": [0.5],
-    "stop_loss_pct": [0.6, 1.0, 1.5],
-    "take_profit_pct": [1.0, 1.5, 2.5],
-    "risk_per_trade_pct": [0.15, 0.35],
-    "leverage": [10.0],
+# Stratejiye göre taranan parametre ızgaraları.
+GRIDS = {
+    "orb": {
+        "open_hour": [15, 16, 17],
+        "or_minutes": [15, 30, 45],
+        "stop_loss_pct": [1.0, 1.5, 2.0],
+        "risk_per_trade_pct": [0.30],
+        "min_or_range_pct": [0.0],
+    },
+    "meanrev": {
+        "lookback": [15, 20, 30, 50],
+        "entry_z": [1.5, 2.0, 2.5],
+        "exit_z": [0.5],
+        "stop_loss_pct": [0.6, 1.0, 1.5],
+        "take_profit_pct": [1.0, 1.5, 2.5],
+        "risk_per_trade_pct": [0.15, 0.35],
+    },
 }
-SWEEP_KEYS = ["lookback", "entry_z", "exit_z", "stop_loss_pct",
-              "take_profit_pct", "risk_per_trade_pct", "leverage"]
+SWEEP_KEYS = {
+    "orb": ["open_hour", "or_minutes", "stop_loss_pct", "risk_per_trade_pct", "min_or_range_pct"],
+    "meanrev": ["lookback", "entry_z", "exit_z", "stop_loss_pct", "take_profit_pct", "risk_per_trade_pct"],
+}
 
 # Sembol-arası test için aday dosyalar
 CROSS_SYMBOLS = ["US500_M5", "US30_M5", "GER40_M5", "NVDA_M5", "XAUUSD_M5", "NAS100_M15"]
 
 
-def optimize(data, grid, cfg, objective, jobs):
+def optimize(data, grid, cfg, objective, jobs, strategy):
     """Grid'i tara; en iyi parametreyi (sadece sweep anahtarları) ve tabloyu döndür."""
-    df = grid_search(data, grid, cfg, objective=objective, n_jobs=jobs)
+    df = grid_search(data, grid, cfg, strategy=strategy, objective=objective, n_jobs=jobs)
     if df.empty:
         return None, df
-    best = {k: df.iloc[0][k] for k in SWEEP_KEYS if k in df.columns}
-    # tip düzelt (lookback int olmalı)
-    if "lookback" in best:
-        best["lookback"] = int(best["lookback"])
+    best = {k: df.iloc[0][k] for k in SWEEP_KEYS[strategy] if k in df.columns}
+    for ik in ("lookback", "open_hour", "or_minutes"):
+        if ik in best:
+            best[ik] = int(best[ik])
     return best, df
 
 
@@ -74,19 +82,19 @@ def section(title: str) -> None:
 
 
 # ───────────────────────── 1) IN-SAMPLE / OUT-OF-SAMPLE ─────────────────────────
-def test_is_oos(data, grid, cfg, objective, jobs, split=0.70):
+def test_is_oos(data, grid, cfg, objective, jobs, strategy, split=0.70):
     section("1) IN-SAMPLE / OUT-OF-SAMPLE (eğitim %70 / test %30)")
     cut = int(len(data) * split)
     train, test = data.iloc[:cut], data.iloc[cut:]
     print(f"  Eğitim: {train.index[0].date()} → {train.index[-1].date()} ({len(train)} bar)")
     print(f"  Test  : {test.index[0].date()} → {test.index[-1].date()} ({len(test)} bar)\n")
 
-    best, df = optimize(train, grid, cfg, objective, jobs)
+    best, df = optimize(train, grid, cfg, objective, jobs, strategy)
     if best is None:
         print("  Yeterli işlem üreten kombinasyon yok.")
         return None
-    is_m = evaluate(train, best, cfg)
-    oos_m = evaluate(test, best, cfg)
+    is_m = evaluate(train, strategy, best, cfg)
+    oos_m = evaluate(test, strategy, best, cfg)
 
     print(f"  En iyi parametre (eğitimde bulundu): {best}\n")
     print(fmt_row("EĞİTİM (IS)", is_m))
@@ -111,18 +119,18 @@ def _verdict_ratio(r):
 
 
 # ───────────────────────────── 2) WALK-FORWARD ─────────────────────────────
-def test_walk_forward(data, grid, cfg, objective, jobs, folds=5):
+def test_walk_forward(data, grid, cfg, objective, jobs, strategy, folds=5):
     section(f"2) WALK-FORWARD ({folds} kat: her blokta optimize → sonraki blokta test)")
     seg = np.array_split(np.arange(len(data)), folds)
     rows = []
     for k in range(len(seg) - 1):
         train = data.iloc[seg[k][0]: seg[k][-1] + 1]
         test = data.iloc[seg[k + 1][0]: seg[k + 1][-1] + 1]
-        best, df = optimize(train, grid, cfg, objective, jobs)
+        best, df = optimize(train, grid, cfg, objective, jobs, strategy)
         if best is None:
             continue
-        is_m = evaluate(train, best, cfg)
-        oos_m = evaluate(test, best, cfg)
+        is_m = evaluate(train, strategy, best, cfg)
+        oos_m = evaluate(test, strategy, best, cfg)
         rows.append({
             "kat": k + 1,
             "test_dönem": f"{test.index[0].date()}→{test.index[-1].date()}",
@@ -131,10 +139,9 @@ def test_walk_forward(data, grid, cfg, objective, jobs, folds=5):
             "OOS_hedef%": round(oos_m["target_hit_rate"] * 100, 1),
             "OOS_sharpe": round(oos_m["sharpe"], 2),
         })
+        pstr = ", ".join(f"{k2}={best[k2]}" for k2 in best)
         print(f"  Kat {k+1}: {test.index[0].date()}→{test.index[-1].date()}  "
-              f"IS {is_m['total_return']*100:7.2f}%  →  OOS {oos_m['total_return']*100:7.2f}%  "
-              f"(params: lb={best['lookback']}, ez={best['entry_z']}, "
-              f"sl={best['stop_loss_pct']}, tp={best['take_profit_pct']}, rpt={best['risk_per_trade_pct']})")
+              f"IS {is_m['total_return']*100:7.2f}%  →  OOS {oos_m['total_return']*100:7.2f}%  ({pstr})")
 
     if not rows:
         print("  Yeterli veri yok.")
@@ -156,13 +163,13 @@ def _verdict_wf(avg, pos, total):
 
 
 # ───────────────────────── 3) SEMBOL-ARASI ROBUSTLUK ─────────────────────────
-def test_cross_symbol(best, cfg, data_dir, primary):
+def test_cross_symbol(best, cfg, data_dir, primary, strategy):
     section("3) SEMBOL-ARASI ROBUSTLUK (aynı parametre, farklı piyasalar)")
     if best is None:
         print("  Parametre yok (IS/OOS başarısız).")
         return
     print(f"  Test edilen parametre: {best}\n")
-    print(fmt_row(f"{primary} (kaynak)", evaluate(_load(Path(data_dir)/f'{primary}.csv'), best, cfg))
+    print(fmt_row(f"{primary} (kaynak)", evaluate(_load(Path(data_dir)/f'{primary}.csv'), strategy, best, cfg))
           if (Path(data_dir)/f'{primary}.csv').exists() else "  (kaynak yüklenemedi)")
     pos = 0
     tested = 0
@@ -170,7 +177,7 @@ def test_cross_symbol(best, cfg, data_dir, primary):
         p = Path(data_dir) / f"{sym}.csv"
         if not p.exists() or sym == primary:
             continue
-        m = evaluate(_load(p), best, cfg)
+        m = evaluate(_load(p), strategy, best, cfg)
         tested += 1
         if m["total_return"] > 0:
             pos += 1
@@ -196,7 +203,8 @@ def test_sensitivity(df, objective):
         return
     top = df.head(10)
     print(f"  En iyi 10 kombinasyon ({objective} sıralı):\n")
-    cols = ["lookback", "entry_z", "stop_loss_pct", "take_profit_pct", "risk_per_trade_pct",
+    cols = ["open_hour", "or_minutes", "lookback", "entry_z", "stop_loss_pct",
+            "take_profit_pct", "risk_per_trade_pct", "min_or_range_pct",
             "total_return", "target_hit_rate", "sharpe", "num_trades"]
     show = top[[c for c in cols if c in top.columns]].copy()
     if "total_return" in show:
@@ -221,7 +229,8 @@ def test_sensitivity(df, objective):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Detaylı overfitting testi")
-    p.add_argument("--data", default="data/NAS100_M15.csv", help="Birincil sembol dosyası")
+    p.add_argument("--data", default="data/NAS100_M5.csv", help="Birincil sembol dosyası")
+    p.add_argument("--strategy", choices=["orb", "meanrev"], default="orb")
     p.add_argument("--dir", default="data", help="Sembol-arası test klasörü")
     p.add_argument("--objective", default="total_return",
                    help="Optimizasyon amacı (total_return, target_hit_rate, sharpe)")
@@ -233,25 +242,26 @@ def parse_args():
 def main():
     args = parse_args()
     cfg = OptConfig()
-    grid = DEFAULT_GRID
+    strategy = args.strategy
+    grid = GRIDS[strategy]
     n_combos = 1
     for v in grid.values():
         n_combos *= len(v)
 
     primary_path = Path(args.data)
     primary_name = primary_path.stem
-    print(f"OVERFITTING TESTİ — birincil sembol: {primary_name}")
+    print(f"OVERFITTING TESTİ — strateji: {strategy} | birincil sembol: {primary_name}")
     print(f"Grid: {n_combos} kombinasyon | amaç: {args.objective} | paralel: {args.jobs}")
 
     data = _load(primary_path)
     print(f"Veri: {len(data)} bar | {data.index[0].date()} → {data.index[-1].date()}")
 
-    best = test_is_oos(data, grid, cfg, args.objective, args.jobs)
-    test_walk_forward(data, grid, cfg, args.objective, args.jobs, folds=args.folds)
-    test_cross_symbol(best, cfg, args.dir, primary_name)
+    best = test_is_oos(data, grid, cfg, args.objective, args.jobs, strategy)
+    test_walk_forward(data, grid, cfg, args.objective, args.jobs, strategy, folds=args.folds)
+    test_cross_symbol(best, cfg, args.dir, primary_name, strategy)
 
     # Duyarlılık için tüm veride bir kez daha optimize edip tabloyu göster
-    _, full_df = optimize(data, grid, cfg, args.objective, args.jobs)
+    _, full_df = optimize(data, grid, cfg, args.objective, args.jobs, strategy)
     test_sensitivity(full_df, args.objective)
 
     section("ÖZET")

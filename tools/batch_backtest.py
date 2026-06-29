@@ -23,21 +23,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.data_loader import load_mt5_csv
 from src.risk import RiskParams
 from src.session_backtester import SessionBacktester, SessionConfig
-from src.strategy import MACrossStrategy
+from src.strategy import MeanReversionStrategy, OpeningRangeBreakout
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="data/ klasörü için toplu backtest")
+    p = argparse.ArgumentParser(description="data/ klasörü için toplu backtest (ORB varsayılan)")
     p.add_argument("--dir", default="data", help="Veri klasörü")
-    p.add_argument("--glob", default="*.csv", help="Dosya deseni (örn. 'US100_*.csv')")
-    p.add_argument("--fast", type=int, default=20)
-    p.add_argument("--slow", type=int, default=50)
-    p.add_argument("--ma", choices=["sma", "ema"], default="ema")
-    p.add_argument("--no-rsi", action="store_true")
+    p.add_argument("--glob", default="*.csv", help="Dosya deseni (örn. 'NAS100_*.csv')")
+    p.add_argument("--strategy", choices=["orb", "meanrev"], default="orb")
+    p.add_argument("--open-hour", type=int, default=16)
+    p.add_argument("--or-minutes", type=int, default=30)
+    p.add_argument("--lookback", type=int, default=20)
     p.add_argument("--target", type=float, default=0.44)
     p.add_argument("--stop", type=float, default=0.44)
-    p.add_argument("--leverage", type=float, default=1.0)
+    p.add_argument("--lock", default="breakeven", choices=["hard", "breakeven", "trail"])
+    p.add_argument("--leverage", type=float, default=2.0)
+    p.add_argument("--sl", type=float, default=1.5)
+    p.add_argument("--risk", type=float, default=0.30)
+    p.add_argument("--session", nargs=2, type=int, default=[16, 22])
     p.add_argument("--cash", type=float, default=10_000.0)
+    p.add_argument("--commission", type=float, default=0.0002)
+    p.add_argument("--slippage", type=float, default=0.0001)
     p.add_argument("--sort", default="total_return",
                    help="Sıralama kolonu (total_return, target_hit_rate, sharpe, ...)")
     p.add_argument("--csv", default=None, help="Özet tabloyu bu CSV'ye yaz")
@@ -55,12 +61,18 @@ def run_one(path: Path, args) -> dict | None:
         print(f"  ⚠️  {path.name} atlandı: çok az bar ({len(data)})")
         return None
 
-    strat = MACrossStrategy(fast=args.fast, slow=args.slow, ma_type=args.ma,
-                            use_rsi=not args.no_rsi)
+    if args.strategy == "orb":
+        strat = OpeningRangeBreakout(open_hour=args.open_hour, or_minutes=args.or_minutes)
+    else:
+        strat = MeanReversionStrategy(lookback=args.lookback)
     signals = strat.generate_signals(data)
     risk = RiskParams(daily_target_pct=args.target, daily_stop_pct=args.stop,
-                      leverage=args.leverage)
-    result = SessionBacktester(SessionConfig(initial_cash=args.cash), risk).run(data, signals)
+                      profit_lock_mode=args.lock, leverage=args.leverage,
+                      stop_loss_pct=args.sl, risk_per_trade_pct=args.risk,
+                      session_start_hour=args.session[0], session_end_hour=args.session[1],
+                      max_trades_per_day=1)
+    result = SessionBacktester(
+        SessionConfig(args.cash, args.commission, args.slippage), risk).run(data, signals)
     m = result.metrics
 
     return {
@@ -98,7 +110,8 @@ def main() -> None:
         return
 
     print(f"{len(files)} dosya bulundu. Backtest çalışıyor "
-          f"(fast={args.fast}, slow={args.slow}, target={args.target}, stop={args.stop})...\n")
+          f"(strateji={args.strategy}, target={args.target}, stop={args.stop}, "
+          f"lock={args.lock}, lev={args.leverage})...\n")
 
     rows = []
     for f in files:

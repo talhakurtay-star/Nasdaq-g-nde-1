@@ -191,14 +191,25 @@ def test_session_hour_filter():
         assert (entry_hours == 10).all()
 
 
-def test_optimizer_grid_search():
+def test_optimizer_grid_search_meanrev():
     from src.optimizer import grid_search, OptConfig
     data = _make_intraday(days=20)
     grid = {"lookback": [15, 20], "entry_z": [2.0], "exit_z": [0.5],
-            "stop_loss_pct": [1.0], "take_profit_pct": [1.5], "leverage": [10.0]}
-    df = grid_search(data, grid, OptConfig(), objective="total_return",
-                     n_jobs=1, min_trades=0)
+            "stop_loss_pct": [1.0], "take_profit_pct": [1.5]}
+    df = grid_search(data, grid, OptConfig(), strategy="meanrev",
+                     objective="total_return", n_jobs=1, min_trades=0)
     assert len(df) == 2
     assert "total_return" in df.columns
-    # Sıralı (azalan) olmalı
     assert df["total_return"].iloc[0] >= df["total_return"].iloc[-1]
+
+
+def test_optimizer_grid_search_orb():
+    """Genelleştirilmiş optimizer ORB'yi de desteklemeli (altın-kural kapısı için)."""
+    from src.optimizer import grid_search, OptConfig
+    data = _make_intraday(days=25, bars_per_day=78)
+    cfg = OptConfig(session_start_hour=9, session_end_hour=16)  # örnek veri 09:30 başlar
+    grid = {"open_hour": [9], "or_minutes": [15, 30], "stop_loss_pct": [1.0]}
+    df = grid_search(data, grid, cfg, strategy="orb",
+                     objective="total_return", n_jobs=1, min_trades=0)
+    assert len(df) == 2
+    assert "open_hour" in df.columns and "total_return" in df.columns
