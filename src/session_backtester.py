@@ -53,11 +53,13 @@ class SessionBacktester:
         target_pos = signals.reindex(data.index).fillna(0).shift(1).fillna(0).astype(int)
 
         equity = cfg.initial_cash          # gerçekleşmiş (realized) hesap equity'si
-        cash = cfg.initial_cash
-        shares = 0.0
-        position = 0
-        entry_price = 0.0
+        position = 0                       # -1 short, 0 flat, +1 long
+        qty = 0.0                          # pozisyon büyüklüğü (adet)
+        entry_fill = 0.0                   # giriş fiyatı (slipaj dahil)
+        entry_notional = 0.0               # giriş nominali
         entry_time = None
+        sl_price = 0.0                     # işlem başına stop fiyatı (0 = yok)
+        tp_price = 0.0                     # işlem başına hedef fiyatı (0 = yok)
 
         cur_day = None
         day_start_equity = equity
@@ -88,35 +90,53 @@ class SessionBacktester:
             is_day_end_arr[-1] = True
             is_day_end_arr[:-1] = day_key[1:] != day_key[:-1]
 
-        def open_long(price: float, ts) -> None:
-            nonlocal cash, shares, position, entry_price, entry_time
-            fill = price * (1 + cfg.slippage)
-            invest = cash * risk.leverage
-            cost = invest * cfg.commission
-            shares = (invest - cost) / fill
-            cash = 0.0
-            position = 1
-            entry_price = fill
+        slip = cfg.slippage
+        comm = cfg.commission
+
+        sl_frac = risk.stop_loss_pct / 100.0
+        tp_frac = risk.take_profit_pct / 100.0
+        risk_frac = risk.risk_per_trade_pct / 100.0
+
+        def open_position(direction: int, price: float, ts) -> None:
+            # Long girişte fiyat yukarı (alış), short girişte aşağı (satış) kayar.
+            nonlocal position, qty, entry_fill, entry_notional, entry_time, sl_price, tp_price
+            fill = price * (1 + direction * slip)
+            max_notional = equity * risk.leverage
+            if sl_frac > 0:
+                # SL'e değince risk_frac kadar kayıp olacak şekilde boyutlandır.
+                qty_risk = (equity * risk_frac) / (sl_frac * fill)
+                qty = min(qty_risk, max_notional / fill)   # nominali tavanla sınırla
+                sl_price = fill * (1 - direction * sl_frac)
+                tp_price = fill * (1 + direction * tp_frac) if tp_frac > 0 else 0.0
+            else:
+                qty = max_notional / fill                  # eski all-in davranışı
+                sl_price = 0.0
+                tp_price = 0.0
+            entry_fill = fill
+            entry_notional = qty * fill
+            position = direction
             entry_time = ts
 
-        def close_long(price: float, ts, reason: str) -> None:
-            nonlocal cash, shares, position, equity
-            fill = price * (1 - cfg.slippage)
-            proceeds = shares * fill
-            cost = proceeds * cfg.commission
-            # kaldıraçlı nominal: yatırılan öz sermaye + P&L
-            pnl = (fill - entry_price) * shares - cost
-            equity = equity + pnl
-            cash = equity
+        def close_position(price: float, ts, reason: str) -> None:
+            # Long çıkışta satış (fiyat aşağı), short çıkışta alış (fiyat yukarı) kayar.
+            nonlocal position, qty, equity
+            exit_fill = price * (1 - position * slip)
+            pnl_gross = position * (exit_fill - entry_fill) * qty
+            costs = (entry_notional + qty * exit_fill) * comm   # her iki bacak komisyonu
+            equity = equity + pnl_gross - costs
             trades.append({
                 "entry_time": entry_time, "exit_time": ts,
-                "entry_price": entry_price, "exit_price": fill,
-                "shares": shares, "pnl": pnl,
-                "return_pct": (fill / entry_price - 1) * 100,
+                "direction": "long" if position == 1 else "short",
+                "entry_price": entry_fill, "exit_price": exit_fill,
+                "qty": qty, "pnl": pnl_gross - costs,
+                "return_pct": position * (exit_fill / entry_fill - 1) * 100,
                 "reason": reason,
             })
-            shares = 0.0
+            qty = 0.0
             position = 0
+
+        def mark_to_market(price: float) -> float:
+            return equity if position == 0 else equity + position * (price - entry_fill) * qty
 
         for i in range(n):
             d = day_key[i]                     # gün anahtarı (numpy datetime64)
@@ -147,42 +167,69 @@ class SessionBacktester:
                 locked_today = True
 
             o, h, l, c = opens[i], highs[i], lows[i], closes[i]
-            desired = target_arr[i]
+            desired = int(target_arr[i])       # -1 / 0 / +1
             if locked_today or month_locked:
                 desired = 0
 
-            # 1) Bar açılışında strateji kaynaklı giriş/çıkış
-            if desired == 0 and position == 1:
-                close_long(o, idx[i], "signal")
-                day_records[cur_day]["trades"] += 1
-            elif desired == 1 and position == 0 and not is_day_end:
-                # gün sonu barında yeni pozisyon açma (kapatamadan kapanış olur)
-                open_long(o, idx[i])
+            # 1) Bar açılışında strateji kaynaklı yön değişimi (gerekirse ters çevir)
+            if desired != position:
+                if position != 0:
+                    close_position(o, idx[i], "signal")
+                    day_records[cur_day]["trades"] += 1
+                if desired != 0 and not is_day_end:
+                    # gün sonu barında yeni pozisyon açma (kapatamadan kapanış olur)
+                    open_position(desired, o, idx[i])
 
-            # 2) Bar içi: kümülatif gün P&L'ine göre target/stop (sadece pozisyondayken)
-            if position == 1 and not locked_today:
-                # bu bardaki nakit 0 (all-in long), equity = shares*fiyat
-                stop_price = stop_equity / shares
-                target_price = target_equity / shares
-                # kötümser: önce stop
-                if l <= stop_price:
-                    close_long(stop_price / (1 - cfg.slippage), idx[i], "daily_stop")
+            # 2) Bar içi tetikleyiciler: işlem-bazlı SL/TP + günlük hesap target/stop.
+            #    Aynı yönde birden çok eşik varsa "önce değen" (girişe en yakın) seçilir.
+            #    Sadece günlük target/stop günü kilitler; işlem SL/TP'si günü kapatmaz.
+            if position != 0 and not locked_today:
+                # mark(p) = equity + position*(p - entry_fill)*qty  →  hesap eşik fiyatları:
+                daily_stop_p = entry_fill + position * (stop_equity - equity) / qty
+                daily_target_p = entry_fill + position * (target_equity - equity) / qty
+
+                if position == 1:
+                    # Zarar (fiyat düşer): girişe en yakın = en yüksek tetik
+                    loss_p, loss_daily = daily_stop_p, True
+                    if sl_price and sl_price > loss_p:
+                        loss_p, loss_daily = sl_price, False
+                    # Kâr (fiyat yükselir): girişe en yakın = en düşük tetik
+                    prof_p, prof_daily = daily_target_p, True
+                    if tp_price and tp_price < prof_p:
+                        prof_p, prof_daily = tp_price, False
+                    hit_loss, hit_prof = l <= loss_p, h >= prof_p
+                else:
+                    # Short: zarar fiyat yükselince (en düşük tetik), kâr fiyat düşünce
+                    loss_p, loss_daily = daily_stop_p, True
+                    if sl_price and sl_price < loss_p:
+                        loss_p, loss_daily = sl_price, False
+                    prof_p, prof_daily = daily_target_p, True
+                    if tp_price and tp_price > prof_p:
+                        prof_p, prof_daily = tp_price, False
+                    hit_loss, hit_prof = h >= loss_p, l <= prof_p
+
+                if hit_loss:                           # kötümser: önce zarar
+                    close_position(loss_p / (1 - position * slip), idx[i],
+                                   "daily_stop" if loss_daily else "stop_loss")
                     day_records[cur_day]["trades"] += 1
-                    day_records[cur_day]["outcome"] = "stop"
-                    locked_today = True
-                elif h >= target_price:
-                    close_long(target_price / (1 - cfg.slippage), idx[i], "daily_target")
+                    if loss_daily:
+                        day_records[cur_day]["outcome"] = "stop"
+                        locked_today = True
+                elif hit_prof:
+                    close_position(prof_p / (1 - position * slip), idx[i],
+                                   "daily_target" if prof_daily else "take_profit")
                     day_records[cur_day]["trades"] += 1
-                    day_records[cur_day]["outcome"] = "target"
-                    locked_today = True
+                    if prof_daily:
+                        day_records[cur_day]["outcome"] = "target"
+                        locked_today = True
 
             # 3) Gün sonu: açık pozisyonu kapat
-            if is_day_end and position == 1 and risk.flat_at_session_end:
-                close_long(c, idx[i], "session_end")
+            if is_day_end and position != 0 and risk.flat_at_session_end:
+                close_position(c, idx[i], "session_end")
                 day_records[cur_day]["trades"] += 1
 
             # 4) Bar kapanışında equity'yi işaretle
-            mark = equity if position == 0 else shares * c
+            mark = mark_to_market(c)
             equity_curve.append(mark)
 
             # 5) Kümülatif gün P&L'i eşiği geçtiyse günü kilitle.
@@ -202,7 +249,7 @@ class SessionBacktester:
             # Gün sonu kaydını tamamla
             if is_day_end:
                 rec = day_records[cur_day]
-                end_eq = equity if position == 0 else shares * c
+                end_eq = mark_to_market(c)
                 rec["end_equity"] = end_eq
                 rec["return_pct"] = (end_eq / rec["start_equity"] - 1) * 100
 

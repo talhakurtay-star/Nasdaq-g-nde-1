@@ -29,9 +29,16 @@ class RiskParams:
     firm_daily_dd_pct: float = 5.0   # gün başı equity'ye göre izinli max günlük düşüş
     monthly_dd_pct: float = 10.0     # ay başı equity'ye göre izinli max aylık düşüş
 
+    # --- İşlem başına risk / boyutlandırma ---
+    # stop_loss_pct > 0 ise pozisyon, SL'e değdiğinde sermayenin risk_per_trade_pct
+    # kadarını kaybedecek şekilde boyutlandırılır. 0 ise eski "all-in" davranışı.
+    stop_loss_pct: float = 0.0        # işlem başına fiyat stop'u % (0 = kapalı)
+    take_profit_pct: float = 0.0      # işlem başına fiyat hedefi % (0 = kapalı)
+    risk_per_trade_pct: float = 0.15  # SL'e değince kaybedilecek sermaye %'si
+
     # --- Seans davranışı ---
     flat_at_session_end: bool = True  # gün sonunda pozisyonu kapat (overnight gap riski yok)
-    leverage: float = 1.0             # nominal = equity * leverage (1.0 = kaldıraçsız)
+    leverage: float = 1.0             # max nominal = equity * leverage (boyut tavanı)
 
     def __post_init__(self) -> None:
         if self.daily_stop_pct > self.firm_daily_dd_pct:
@@ -41,6 +48,8 @@ class RiskParams:
             )
         if self.leverage <= 0:
             raise ValueError("leverage pozitif olmalı.")
+        if self.stop_loss_pct < 0 or self.take_profit_pct < 0:
+            raise ValueError("stop_loss_pct / take_profit_pct negatif olamaz.")
 
     # Oranlar (yüzde -> kesir)
     @property
