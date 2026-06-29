@@ -43,10 +43,13 @@ def generate(out_path: Path, timeframe: str = "M5", days: int = 60, seed: int = 
     bar_vol = 0.01 / np.sqrt(6.5 * 60 / minutes)
     drift = 0.00002
     rets = rng.normal(drift, bar_vol, n)
-    price = 16000 * np.exp(np.cumsum(rets))
+    closes = 16000 * np.exp(np.cumsum(rets))
 
-    opens = price * (1 + rng.normal(0, bar_vol * 0.2, n))
-    closes = price
+    # Gerçek gün-içi veride barlar kesintisizdir: her açılış bir önceki kapanışa eşit.
+    # (Yapay bar-içi boşluk olmasın diye.)
+    opens = np.empty(n)
+    opens[0] = 16000.0
+    opens[1:] = closes[:-1]
     highs = np.maximum(opens, closes) * (1 + np.abs(rng.normal(0, bar_vol * 0.5, n)))
     lows = np.minimum(opens, closes) * (1 - np.abs(rng.normal(0, bar_vol * 0.5, n)))
     tickvol = rng.integers(500, 5000, n)

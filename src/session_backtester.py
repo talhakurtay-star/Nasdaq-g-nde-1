@@ -174,6 +174,20 @@ class SessionBacktester:
             mark = equity if position == 0 else shares * c
             equity_curve.append(mark)
 
+            # 5) Kümülatif gün P&L'i eşiği geçtiyse günü kilitle.
+            #    (Pozisyon dışıyken sinyalle biriken küçük zararlar/kârlar da
+            #     stop/target'ı aşmasın diye; yeni işlem açılmaz.)
+            if not locked_today:
+                day_pl = mark / day_start_equity - 1
+                if day_pl <= -risk.daily_stop:
+                    locked_today = True
+                    if day_records[cur_day]["outcome"] == "neutral":
+                        day_records[cur_day]["outcome"] = "stop"
+                elif day_pl >= risk.daily_target:
+                    locked_today = True
+                    if day_records[cur_day]["outcome"] == "neutral":
+                        day_records[cur_day]["outcome"] = "target"
+
             # Gün sonu kaydını tamamla
             if is_day_end:
                 rec = day_records[cur_day]

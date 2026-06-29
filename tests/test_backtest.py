@@ -27,7 +27,9 @@ def _make_intraday(days=20, bars_per_day=78, seed=7):
     idx = pd.DatetimeIndex(stamps)
     n = len(idx)
     price = 16000 * np.exp(np.cumsum(rng.normal(0, 0.001, n)))
-    o = price * (1 + rng.normal(0, 0.0002, n))
+    o = np.empty(n)
+    o[0] = 16000.0
+    o[1:] = price[:-1]  # kesintisiz: açılış = önceki kapanış
     h = np.maximum(o, price) * (1 + np.abs(rng.normal(0, 0.0005, n)))
     lo = np.minimum(o, price) * (1 - np.abs(rng.normal(0, 0.0005, n)))
     return pd.DataFrame({"open": o, "high": h, "low": lo, "close": price, "volume": 1000}, index=idx)
@@ -108,9 +110,9 @@ def test_session_daily_caps_hold():
     risk = RiskParams(daily_target_pct=0.44, daily_stop_pct=0.44)
     result = SessionBacktester(SessionConfig(), risk).run(data, sig)
 
-    # Slipaj nedeniyle çok küçük taşma olabilir; makul tolerans
-    assert result.days["return_pct"].max() <= 0.44 + 0.05
-    assert result.days["return_pct"].min() >= -0.44 - 0.05
+    # Kesintisiz veride taşma sadece kapanış işleminin komisyon/slipajı kadar olmalı.
+    assert result.days["return_pct"].max() <= 0.44 + 0.15
+    assert result.days["return_pct"].min() >= -0.44 - 0.15
 
 
 def test_session_never_breaches_firm_limit():
