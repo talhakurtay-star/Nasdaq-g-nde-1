@@ -191,6 +191,56 @@ def test_session_hour_filter():
         assert (entry_hours == 10).all()
 
 
+def _one_day(op, cl, hi=None, lo=None):
+    idx = pd.DatetimeIndex([pd.Timestamp("2024-01-02 10:00") + pd.Timedelta(minutes=5 * i)
+                            for i in range(len(op))])
+    op = np.array(op, float); cl = np.array(cl, float)
+    hi = cl + 0.05 if hi is None else np.array(hi, float)
+    lo = op - 0.05 if lo is None else np.array(lo, float)
+    return pd.DataFrame({"open": op, "high": hi, "low": lo, "close": cl, "volume": 1}, index=idx)
+
+
+def _wide_risk(**k):
+    return RiskParams(daily_target_pct=4.9, daily_stop_pct=4.9, firm_daily_dd_pct=99,
+                      monthly_dd_pct=99, flat_at_session_end=True, **k)
+
+
+def test_pnl_long_exact():
+    """El hesabı: gir@100, çık@101, qty=100, maliyetsiz → equity tam 10100."""
+    data = _one_day([100, 100, 100.2, 100.5, 100.8, 101.0], [100, 100.2, 100.5, 100.8, 101.0, 101.0])
+    sig = pd.Series(1, index=data.index)
+    r = SessionBacktester(SessionConfig(10000, 0, 0), _wide_risk(stop_loss_pct=0, leverage=1)).run(data, sig)
+    assert abs(r.metrics["final_equity"] - 10100) < 0.5
+
+
+def test_pnl_commission_exact():
+    """Komisyon 0.001: cost=100*(100+101)*0.001=20.10 → equity 10079.90."""
+    data = _one_day([100, 100, 100.2, 100.5, 100.8, 101.0], [100, 100.2, 100.5, 100.8, 101.0, 101.0])
+    sig = pd.Series(1, index=data.index)
+    r = SessionBacktester(SessionConfig(10000, 0.001, 0), _wide_risk(stop_loss_pct=0, leverage=1)).run(data, sig)
+    assert abs(r.metrics["final_equity"] - 10079.9) < 0.5
+
+
+def test_pnl_short_exact():
+    """Short: gir@100, çık@99 → +100 → equity 10100."""
+    data = _one_day([100, 100, 99.8, 99.5, 99.2, 99.0], [100, 99.8, 99.5, 99.2, 99.0, 99.0],
+                    hi=[100.05]*6, lo=[98.95]*6)
+    sig = pd.Series(-1, index=data.index)
+    r = SessionBacktester(SessionConfig(10000, 0, 0), _wide_risk(stop_loss_pct=0, leverage=1)).run(data, sig)
+    assert abs(r.metrics["final_equity"] - 10100) < 0.5
+
+
+def test_position_sizing_exact():
+    """risk %1 + SL %2: SL'e değince tam %1 (100$) kaybedilmeli."""
+    data = _one_day([100, 100, 99, 98.5, 97, 97], [100, 100, 99, 98, 97, 97])
+    sig = pd.Series(1, index=data.index)
+    r = SessionBacktester(SessionConfig(10000, 0, 0),
+                          _wide_risk(stop_loss_pct=2.0, risk_per_trade_pct=1.0, leverage=100)).run(data, sig)
+    loss = 10000 - r.metrics["final_equity"]
+    assert abs(loss - 100) < 5
+    assert (r.trades["reason"] == "stop_loss").any()
+
+
 def test_indicators_sane():
     from src import indicators as ind
     data = _make_intraday(days=20)
