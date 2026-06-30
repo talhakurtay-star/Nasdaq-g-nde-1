@@ -59,6 +59,21 @@ python tools/indicator_battery.py --data data/NAS100_M5.csv
 python tools/ml_signal.py --data data/NAS100_M5.csv
 ```
 
+## FundingPips (prop-firma) eval modu
+Hedef: +%8 kâra ulaş, günlük %5 / toplam %10 DD'yi ihlal etme. Eval geçmek bir
+**varyans + risk yönetimi** işidir (kalıcı edge değil). İç günlük stop firma
+limitinin yarısında (%2.5) → günlük DD ihlali **yapısal olarak engelli**.
+
+```bash
+python main.py --data data/NAS100_M5.csv --preset fundingpips --monthly
+python tools/fundingpips.py --data data/NAS100_M5.csv     # geçme-oranı simülasyonu
+```
+
+- **Eval sprint (+%8'e -%10'dan önce):** ~%59 geçer (döneme göre %50-95).
+- **Dürüst uyarı:** tüm-koşu max DD ~-%22 → eval'ı geçtikten sonra funded hesapta
+  riski DÜŞÜR (eval=agresif, funded=koruyucu). %100 garanti yok, eval ücreti riski var.
+- Sayılar tam-veriye dayalı; walk-forward'da edge kırılgan (gerçek biraz daha düşük).
+
 ## Stratejiler
 - **ORB** (Opening Range Breakout, varsayılan) — açılış aralığı kırılımı, gün boyu yön kilidi, günde tek işlem.
 - **MeanReversion** — z-score/Bollinger ortalamaya dönüş (long+short).

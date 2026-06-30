@@ -75,7 +75,28 @@ def parse_args():
     p.add_argument("--monthly", action="store_true", help="Aylık P&L dökümünü göster")
     p.add_argument("--export", default=None,
                    help="trade ve equity'yi <ÖNEK>_trades.csv / _equity.csv olarak kaydet")
+    p.add_argument("--preset", choices=["fundingpips"], default=None,
+                   help="Hazır konfig. fundingpips: eval-optimize (iç stop %2.5, risk %1.5, breakeven)")
     return p.parse_args()
+
+
+def apply_preset(args):
+    """Hazır konfigürasyonları uygula (CLI argümanlarını override eder)."""
+    if args.preset == "fundingpips":
+        # Dönem-robust optimize: iç günlük stop firma %5'in yarısı (tampon) → günlük
+        # ihlal yapısal engelli; breakeven kazananı koşturur; risk %1.5 (düşük ihlal).
+        args.strategy = "orb"
+        args.target = 2.5        # iç günlük tavan (lock)
+        args.stop = 2.5          # iç günlük stop (firma %5'in yarısı)
+        args.lock = "breakeven"
+        args.lev = 10.0
+        args.sl = 1.5
+        args.risk = 1.5
+        args.session = [16, 22]
+        args.max_trades = 1
+        args.open_hour = 16
+        args.or_minutes = 30
+    return args
 
 
 def show_today(data, signals, args) -> None:
@@ -112,6 +133,9 @@ def show_today(data, signals, args) -> None:
 
 def main():
     args = parse_args()
+    args = apply_preset(args)
+    if args.preset:
+        print(f"[preset: {args.preset}]")
     print(f"Veri yükleniyor: {args.data}")
     data = load_mt5_csv(args.data)
     yrs = (data.index[-1] - data.index[0]).days / 365.25
